@@ -10,7 +10,7 @@ import {
   createProjectAction,
   deleteProjectAction,
 } from "@/app/actions/projects"
-import { createThreadAction } from "@/app/actions/threads"
+import { createThreadAction, deleteThreadAction } from "@/app/actions/threads"
 import { NavMain } from "@/components/nav-main"
 import { NavProjects } from "@/components/nav-projects"
 import { NavUser } from "@/components/nav-user"
@@ -89,7 +89,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   }, [loadProjects])
 
   const handleDeleteThread = React.useCallback(
-    async (threadId: string) => {
+    async (projectId: string, threadId: string) => {
       let shouldDelete = false
       setDeletingThreadIds((previous) => {
         if (previous.has(threadId)) return previous
@@ -104,6 +104,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
       try {
         await client.threads.delete(threadId)
+        const backendResult = await deleteThreadAction({ projectId, threadId })
+        if (!backendResult.ok) {
+          return
+        }
+
         if (isDeletingActiveThread) {
           const params = new URLSearchParams(searchParams.toString())
           params.delete("thread")
@@ -234,6 +239,21 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           return {
             ok: false as const,
             message: "Failed to delete one or more LangGraph threads.",
+          }
+        }
+
+        const backendThreadDeleteResults = await Promise.allSettled(
+          project.threads.map((thread) =>
+            deleteThreadAction({ projectId, threadId: thread.threadId })
+          )
+        )
+        const hasBackendThreadDeleteFailure = backendThreadDeleteResults.some(
+          (result) => result.status === "rejected" || (result.status === "fulfilled" && !result.value?.ok)
+        )
+        if (hasBackendThreadDeleteFailure) {
+          return {
+            ok: false as const,
+            message: "Failed to delete one or more threads from backend.",
           }
         }
 

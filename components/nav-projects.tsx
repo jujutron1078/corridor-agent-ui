@@ -61,7 +61,7 @@ export function NavProjects({
       url: string
     }[]
   }[]
-  onDeleteThread?: (threadId: string) => void
+  onDeleteThread?: (projectId: string, threadId: string) => void
   deletingThreadIds?: Set<string>
   onCreateProject?: (name: string) => Promise<{ ok: boolean; message: string }>
   onCreateThread?: (project: {
@@ -317,7 +317,7 @@ export function NavProjects({
                             onClick={(event) => {
                               event.preventDefault()
                               event.stopPropagation()
-                              onDeleteThread?.(thread.threadId)
+                              onDeleteThread?.(project.projectId, thread.threadId)
                             }}
                             disabled={Boolean(deletingThreadIds?.has(thread.threadId))}
                             aria-label={`Delete ${thread.name}`}

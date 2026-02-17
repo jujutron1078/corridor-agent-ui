@@ -64,3 +64,52 @@ export async function createThreadAction({
     }
   }
 }
+
+type DeleteThreadApiResponse = {
+  success: boolean
+  message: string
+  data?: { thread_id: string; project_id: string }
+}
+
+export type DeleteThreadActionResult =
+  | { ok: true; message: string }
+  | { ok: false; message: string }
+
+export async function deleteThreadAction({
+  projectId,
+  threadId,
+}: {
+  projectId: string
+  threadId: string
+}): Promise<DeleteThreadActionResult> {
+  const trimmedProjectId = projectId.trim()
+  const trimmedThreadId = threadId.trim()
+  if (!trimmedProjectId || !trimmedThreadId) {
+    return { ok: false, message: "projectId and threadId are required." }
+  }
+
+  try {
+    const response = await fetch(
+      `${THREADS_API_URL}/threads/${encodeURIComponent(trimmedProjectId)}/${encodeURIComponent(trimmedThreadId)}`,
+      {
+        method: "DELETE",
+        cache: "no-store",
+      }
+    )
+
+    const payload = (await response.json()) as DeleteThreadApiResponse
+    if (!response.ok || !payload.success) {
+      return {
+        ok: false,
+        message: payload.message ?? "Unable to delete thread from backend.",
+      }
+    }
+
+    return { ok: true, message: payload.message }
+  } catch {
+    return {
+      ok: false,
+      message: "Unable to reach thread service.",
+    }
+  }
+}

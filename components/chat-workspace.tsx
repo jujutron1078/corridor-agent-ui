@@ -154,7 +154,8 @@ function isSameMapData(
         left.endCoordinate?.longitude !== right.endCoordinate?.longitude ||
         left.avgSlope !== right.avgSlope ||
         left.soilStability !== right.soilStability ||
-        left.floodRisk !== right.floodRisk
+        left.floodRisk !== right.floodRisk ||
+        left.difficultyScore !== right.difficultyScore
       ) {
         return false;
       }
@@ -172,9 +173,18 @@ function isSameMapData(
       left.latitude !== right.latitude ||
       left.longitude !== right.longitude ||
       left.radiusKm !== right.radiusKm ||
-      left.reason !== right.reason
+      left.reason !== right.reason ||
+      left.severity !== right.severity
     ) {
       return false;
+    }
+
+    if ((left.polygon?.length ?? 0) !== (right.polygon?.length ?? 0)) return false;
+    for (let pointIndex = 0; pointIndex < (left.polygon?.length ?? 0); pointIndex += 1) {
+      const leftPoint = left.polygon?.[pointIndex];
+      const rightPoint = right.polygon?.[pointIndex];
+      if (!leftPoint || !rightPoint) return false;
+      if (leftPoint[0] !== rightPoint[0] || leftPoint[1] !== rightPoint[1]) return false;
     }
   }
 
@@ -203,6 +213,33 @@ function isSameMapData(
       left.bbox?.bottomRight.longitude !== right.bbox?.bottomRight.longitude
     ) {
       return false;
+    }
+  }
+
+  if ((a.routeVariants?.length ?? 0) !== (b.routeVariants?.length ?? 0)) {
+    return false;
+  }
+  for (let index = 0; index < (a.routeVariants?.length ?? 0); index += 1) {
+    const left = a.routeVariants?.[index];
+    const right = b.routeVariants?.[index];
+    if (!left || !right) return false;
+    if (
+      left.variantId !== right.variantId ||
+      left.label !== right.label ||
+      left.rank !== right.rank ||
+      left.isRecommended !== right.isRecommended ||
+      left.distanceKm !== right.distanceKm ||
+      left.estimatedCostUsd !== right.estimatedCostUsd ||
+      left.estimatedDurationHours !== right.estimatedDurationHours
+    ) {
+      return false;
+    }
+
+    if (left.route.length !== right.route.length) return false;
+    for (let pointIndex = 0; pointIndex < left.route.length; pointIndex += 1) {
+      const [leftLat, leftLng] = left.route[pointIndex];
+      const [rightLat, rightLng] = right.route[pointIndex];
+      if (leftLat !== rightLat || leftLng !== rightLng) return false;
     }
   }
 
