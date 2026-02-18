@@ -8,6 +8,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { ChatWorkspace } from "@/components/chat-workspace";
 import { SiteHeader } from "@/components/site-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { AssistantProvider } from "@/lib/assistant-context";
 
 const sidebarStyle = {
   "--sidebar-width": "224px",
@@ -46,15 +47,17 @@ export function ChatPageShell() {
 
   return (
     <SidebarProvider className="h-svh" style={sidebarStyle}>
-      <AppSidebar variant="sidebar" />
-      <SidebarInset className="min-h-0 overflow-hidden">
-        <SiteHeader onMapClick={handleMapClick} />
-        <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
-          <Suspense fallback={null}>
-            <ChatWorkspace isSplitView={isSplitView} />
-          </Suspense>
-        </div>
-      </SidebarInset>
+      <AssistantProvider>
+        <AppSidebar variant="sidebar" />
+        <SidebarInset className="min-h-0 overflow-hidden">
+          <SiteHeader onMapClick={handleMapClick} />
+          <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
+            <Suspense fallback={null}>
+              <ChatWorkspace isSplitView={isSplitView} />
+            </Suspense>
+          </div>
+        </SidebarInset>
+      </AssistantProvider>
     </SidebarProvider>
   );
 }

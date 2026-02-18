@@ -8,7 +8,7 @@ type ChatEmptyStateProps = {
   onSubmit: () => void;
   onStop?: () => void;
   isLoading: boolean;
-  maxChars: number;
+  maxChars?: number;
   error?: unknown;
 };
 
@@ -45,7 +45,7 @@ export function ChatEmptyState({
             onSubmit={onSubmit}
             onStop={onStop}
             disabled={isLoading}
-            maxChars={maxChars}
+            {...(typeof maxChars === "number" && { maxChars })}
           />
         </div>
       </div>

@@ -9,12 +9,11 @@ import type { ToolCallWithResult } from "@langchain/langgraph-sdk/react";
 import { ChatComposer } from "@/components/chat-composer";
 import { ChatEmptyState } from "@/components/chat-empty-state";
 import { ChatMessageList } from "@/components/chat-message-list";
+import { useAssistant } from "@/lib/assistant-context";
 import type { MapOverlayData } from "@/lib/map-overlay";
 import { extractMapOverlayData, extractMapOverlayDataFromToolCalls } from "@/lib/map-overlay";
 
-const MAX_CHARS = 280;
 const LANGGRAPH_API_URL = "http://127.0.0.1:2024";
-const ASSISTANT_ID = "geospatial_intelligence_agent";
 const THREAD_PARAM = "thread";
 
 function getTextForScroll(content: Message["content"]): string {
@@ -43,9 +42,14 @@ type ChatPanelProps = {
   onMapDataChange?: (data: MapOverlayData | null) => void;
 };
 
+const SCROLL_AT_BOTTOM_THRESHOLD_PX = 80;
+
 export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPanelProps) {
+  const { assistantId } = useAssistant();
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const userJustSentRef = useRef(false);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -63,7 +67,7 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
   );
 
   const stream = useStream<{ messages: Message[] }>({
-    assistantId: ASSISTANT_ID,
+    assistantId,
     apiUrl: LANGGRAPH_API_URL,
     threadId: threadId ?? undefined,
     onThreadId: handleThreadId,
@@ -92,7 +96,13 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
   }, [messages]);
 
   useEffect(() => {
-    scrollToBottom();
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const shouldFollow = userJustSentRef.current || (el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_AT_BOTTOM_THRESHOLD_PX);
+    if (shouldFollow) {
+      userJustSentRef.current = false;
+      scrollToBottom();
+    }
   }, [messages.length, isLoading, lastMessageContentLength, scrollToBottom]);
 
   useEffect(() => {
@@ -154,6 +164,7 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
     if (!text || stream.isLoading) return;
 
     setInput("");
+    userJustSentRef.current = true;
 
     stream.submit(
       {
@@ -186,7 +197,6 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
         onSubmit={handleSubmit}
         onStop={() => stream.stop()}
         isLoading={isLoading}
-        maxChars={MAX_CHARS}
         error={stream.error}
       />
     );
@@ -198,7 +208,10 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
       role="region"
       aria-label="Chat"
     >
-      <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+      <div
+        ref={scrollContainerRef}
+        className="min-h-0 flex-1 overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+      >
         <ChatMessageList messages={messages} isLoading={isLoading} getToolCalls={getToolCalls} />
         <div ref={messagesEndRef} />
       </div>
@@ -220,7 +233,6 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
           onSubmit={handleSubmit}
           onStop={() => stream.stop()}
           disabled={isLoading}
-          maxChars={MAX_CHARS}
         />
       </div>
     </div>

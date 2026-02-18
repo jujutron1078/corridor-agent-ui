@@ -86,9 +86,32 @@ export type RouteVariant = {
   rank?: number;
   isRecommended?: boolean;
   route: [number, number][];
+  description?: string;
+  compositeScore?: number;
+  straightLineOverheadPct?: number;
+  weightedAvgHighwayOverlapPct?: number;
+  anchorLoadsWithin15Km?: number;
+  anchorLoadsDirectlyServed?: number;
+  grossCapexUsd?: number;
+  coLocationSavingUsd?: number;
+  coLocationSavingPct?: number;
   distanceKm?: number;
   estimatedCostUsd?: number;
   estimatedDurationHours?: number;
+  keyTradeoff?: string;
+  equityIrrPct?: number;
+  projectIrrPct?: number;
+  paybackYears?: number;
+  throughputGwh?: number;
+  revenueUsd?: number;
+  ebitdaUsd?: number;
+  scoringBreakdown?: {
+    capexScore?: number;
+    terrainScore?: number;
+    environmentalScore?: number;
+    coLocationScore?: number;
+    anchorLoadCoverage?: number;
+  };
 };
 
 /** Accepts SDK ToolCallWithResult and other shapes that have call/result. */
@@ -611,6 +634,8 @@ function parseRouteVariants(payload: UnknownRecord): RouteVariant[] {
 
       const totals = toRecord(item.totals);
       const netCapex = toNumber(totals?.net_capex_usd) ?? toNumber(item.estimated_cost_usd ?? item.cost_usd);
+      const scoringBreakdown = toRecord(item.scoring_breakdown);
+      const financialIndicators = toRecord(item.financial_indicators);
 
       return {
         variantId,
@@ -622,6 +647,16 @@ function parseRouteVariants(payload: UnknownRecord): RouteVariant[] {
           rank === 1 ||
           (recommendedId !== undefined && variantId === recommendedId),
         route,
+        description: toString(item.description) ?? undefined,
+        compositeScore: toNumber(item.composite_score) ?? undefined,
+        straightLineOverheadPct: toNumber(item.vs_straight_line_overhead_pct) ?? undefined,
+        weightedAvgHighwayOverlapPct:
+          toNumber(totals?.weighted_avg_highway_overlap_pct) ?? undefined,
+        anchorLoadsWithin15Km: toNumber(totals?.anchor_loads_within_15km) ?? undefined,
+        anchorLoadsDirectlyServed: toNumber(totals?.anchor_loads_directly_served) ?? undefined,
+        grossCapexUsd: toNumber(totals?.gross_capex_usd) ?? undefined,
+        coLocationSavingUsd: toNumber(totals?.total_co_location_saving_usd) ?? undefined,
+        coLocationSavingPct: toNumber(totals?.co_location_saving_pct) ?? undefined,
         distanceKm:
           toNumber(item.distance_km ?? item.length_km ?? item.total_length_km) ??
           toNumber(totals?.total_length_km) ??
@@ -629,6 +664,23 @@ function parseRouteVariants(payload: UnknownRecord): RouteVariant[] {
         estimatedCostUsd: netCapex ?? undefined,
         estimatedDurationHours:
           toNumber(item.estimated_duration_hours ?? item.travel_time_hours) ?? undefined,
+        keyTradeoff: toString(item.key_tradeoff) ?? undefined,
+        equityIrrPct: toNumber(financialIndicators?.indicative_equity_irr_pct) ?? undefined,
+        projectIrrPct: toNumber(financialIndicators?.indicative_project_irr_pct) ?? undefined,
+        paybackYears: toNumber(financialIndicators?.indicative_payback_years) ?? undefined,
+        throughputGwh: toNumber(financialIndicators?.estimated_year5_throughput_gwh) ?? undefined,
+        revenueUsd: toNumber(financialIndicators?.estimated_year5_revenue_usd) ?? undefined,
+        ebitdaUsd: toNumber(financialIndicators?.estimated_year5_ebitda_usd) ?? undefined,
+        scoringBreakdown:
+          scoringBreakdown !== null
+            ? {
+                capexScore: toNumber(scoringBreakdown.capex_score) ?? undefined,
+                terrainScore: toNumber(scoringBreakdown.terrain_score) ?? undefined,
+                environmentalScore: toNumber(scoringBreakdown.environmental_score) ?? undefined,
+                coLocationScore: toNumber(scoringBreakdown.co_location_score) ?? undefined,
+                anchorLoadCoverage: toNumber(scoringBreakdown.anchor_load_coverage) ?? undefined,
+              }
+            : undefined,
       };
     })
     .filter((variant): variant is RouteVariant => variant !== null)

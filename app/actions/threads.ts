@@ -20,6 +20,7 @@ export type CreateThreadActionResult =
       message: string
     }
 
+// Backend workspace API: create POST /workspace/threads, delete DELETE /workspace/threads/{project_id}/{thread_id}
 const THREADS_API_URL = process.env.THREADS_API_URL ?? "http://127.0.0.1:2024"
 
 export async function createThreadAction({
@@ -68,7 +69,7 @@ export async function createThreadAction({
 type DeleteThreadApiResponse = {
   success: boolean
   message: string
-  data?: { thread_id: string; project_id: string }
+  data?: { thread_id: string; project_id: string } | null
 }
 
 export type DeleteThreadActionResult =
@@ -89,23 +90,35 @@ export async function deleteThreadAction({
   }
 
   try {
+    // DELETE /workspace/threads/{project_id}/{thread_id}
     const response = await fetch(
-      `${THREADS_API_URL}/threads/${encodeURIComponent(trimmedProjectId)}/${encodeURIComponent(trimmedThreadId)}`,
+      `${THREADS_API_URL}/workspace/threads/${encodeURIComponent(trimmedProjectId)}/${encodeURIComponent(trimmedThreadId)}`,
       {
         method: "DELETE",
         cache: "no-store",
       }
     )
 
-    const payload = (await response.json()) as DeleteThreadApiResponse
-    if (!response.ok || !payload.success) {
-      return {
-        ok: false,
-        message: payload.message ?? "Unable to delete thread from backend.",
+    const text = await response.text()
+    let payload: DeleteThreadApiResponse | null = null
+    if (text.trim()) {
+      try {
+        payload = JSON.parse(text) as DeleteThreadApiResponse
+      } catch {
+        // ignore non-JSON body (e.g. 204 No Content)
       }
     }
+    if (!response.ok) {
+      return {
+        ok: false,
+        message: payload?.message ?? "Unable to delete thread from backend.",
+      }
+    }
+    if (payload && !payload.success) {
+      return { ok: false, message: payload.message ?? "Delete failed." }
+    }
 
-    return { ok: true, message: payload.message }
+    return { ok: true, message: payload?.message ?? "Thread deleted." }
   } catch {
     return {
       ok: false,

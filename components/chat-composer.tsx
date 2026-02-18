@@ -12,8 +12,6 @@ import {
 import { ArrowUp, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const DEFAULT_MAX_CHARS = 280;
-
 export interface ChatComposerProps {
   value: string;
   onChange: (value: string) => void;
@@ -31,15 +29,17 @@ export function ChatComposer({
   onSubmit,
   onStop,
   disabled = false,
-  maxChars = DEFAULT_MAX_CHARS,
+  maxChars,
   placeholder = "Write a message...",
   className,
 }: ChatComposerProps) {
   const charCount = value.length;
-  const canSend = charCount > 0 && charCount <= maxChars && !disabled;
+  const hasLimit = typeof maxChars === "number";
+  const canSend = charCount > 0 && (!hasLimit || charCount <= maxChars) && !disabled;
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    onChange(e.target.value.slice(0, maxChars));
+    const next = e.target.value;
+    onChange(hasLimit ? next.slice(0, maxChars) : next);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -57,7 +57,7 @@ export function ChatComposer({
             id="chat-input"
             placeholder={placeholder}
             rows={2}
-            className="min-h-[56px]"
+            className="min-h-[56px] max-h-[200px] overflow-y-auto resize-none"
             value={value}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
@@ -65,14 +65,16 @@ export function ChatComposer({
             aria-label="Ask me anything to get started"
           />
           <InputGroupAddon align="block-end">
-            <InputGroupText
-              className={cn(
-                "text-muted-foreground text-xs",
-                charCount > maxChars && "text-destructive"
-              )}
-            >
-              {charCount}/{maxChars}
-            </InputGroupText>
+            {hasLimit && (
+              <InputGroupText
+                className={cn(
+                  "text-muted-foreground text-xs",
+                  charCount > maxChars && "text-destructive"
+                )}
+              >
+                {charCount}/{maxChars}
+              </InputGroupText>
+            )}
             {disabled ? (
               <InputGroupButton
                 variant="secondary"

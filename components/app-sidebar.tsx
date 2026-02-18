@@ -11,6 +11,7 @@ import {
   deleteProjectAction,
 } from "@/app/actions/projects"
 import { createThreadAction, deleteThreadAction } from "@/app/actions/threads"
+import { toast } from "sonner"
 import { NavMain } from "@/components/nav-main"
 import { NavProjects } from "@/components/nav-projects"
 import { NavUser } from "@/components/nav-user"
@@ -104,8 +105,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
       try {
         await client.threads.delete(threadId)
+
         const backendResult = await deleteThreadAction({ projectId, threadId })
         if (!backendResult.ok) {
+          toast.error(backendResult.message ?? "Failed to delete thread from workspace.")
           return
         }
 
@@ -123,7 +126,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           }))
         )
       } catch {
-        // Keep the existing list when delete fails.
+        toast.error("Failed to delete thread.")
       } finally {
         setDeletingThreadIds((previous) => {
           const next = new Set(previous)

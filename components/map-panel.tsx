@@ -2,61 +2,80 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { GeoJsonLayer, IconLayer, PathLayer, PolygonLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { MapboxOverlay } from "@deck.gl/mapbox";
+import maplibregl, { Map as MapLibreMap } from "maplibre-gl";
+import type { Feature, FeatureCollection, Polygon } from "geojson";
+
 import type { MapOverlayData, NoGoZone, RouteVariant } from "@/lib/map-overlay";
 
-type LeafletLike = {
-  map: (container: HTMLElement, options?: Record<string, unknown>) => LeafletMapLike;
-  tileLayer: (
-    urlTemplate: string,
-    options?: Record<string, unknown>
-  ) => { addTo: (map: LeafletMapLike) => void };
-  layerGroup: () => LeafletLayerGroupLike;
-  marker: (latlng: [number, number]) => { bindPopup: (html: string) => unknown };
-  circleMarker: (
-    latlng: [number, number],
-    options?: Record<string, unknown>
-  ) => { bindPopup: (html: string) => unknown };
-  polyline: (
-    latlngs: [number, number][],
-    options?: Record<string, unknown>
-  ) => LeafletBoundsLayerLike;
-  polygon: (
-    latlngs: [number, number][],
-    options?: Record<string, unknown>
-  ) => LeafletBoundsLayerLike;
-  latLngBounds: (
-    latlngs: [number, number][]
-  ) => { isValid: () => boolean; pad: (ratio: number) => unknown };
+type LayerVisibility = {
+  corridor: boolean;
+  environmental: boolean;
+  terrain: boolean;
+  routes: boolean;
+  infrastructure: boolean;
+  points: boolean;
 };
 
-type LeafletMapLike = {
-  fitBounds: (bounds: unknown, options?: Record<string, unknown>) => void;
-  setView: (latlng: [number, number], zoom: number) => void;
-  invalidateSize?: (options?: Record<string, unknown> | boolean) => void;
-  remove: () => void;
+type OverlayObject = {
+  popupHtml?: string;
+  properties?: {
+    popupHtml?: string;
+  };
 };
-
-type LeafletLayerGroupLike = {
-  addTo: (map: LeafletMapLike) => LeafletLayerGroupLike;
-  clearLayers: () => void;
-  addLayer: (layer: unknown) => void;
-};
-
-type LeafletBoundsLayerLike = {
-  getBounds: () => { isValid: () => boolean; pad: (ratio: number) => unknown };
-  bindPopup?: (html: string) => unknown;
-};
-
-declare global {
-  interface Window {
-    L?: LeafletLike;
-  }
-}
 
 const DEFAULT_CENTER: [number, number] = [6.0, -0.3];
 const DEFAULT_ZOOM = 5;
-const LEAFLET_CSS_ID = "leaflet-css";
-const LEAFLET_SCRIPT_ID = "leaflet-script";
+const MAPLIBRE_CSS_ID = "maplibre-css";
+
+const DEFAULT_LAYER_VISIBILITY: LayerVisibility = {
+  corridor: true,
+  environmental: true,
+  terrain: true,
+  routes: true,
+  infrastructure: true,
+  points: true,
+};
+
+const LAYER_TOGGLE_OPTIONS: { key: keyof LayerVisibility; label: string }[] = [
+  { key: "corridor", label: "Corridor" },
+  { key: "terrain", label: "Terrain" },
+  { key: "environmental", label: "Environment" },
+  { key: "infrastructure", label: "Infrastructure" },
+  { key: "routes", label: "Route" },
+  { key: "points", label: "Pins" },
+];
+
+const PIN_ICON_URL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="42" viewBox="0 0 34 42">
+    <defs>
+      <filter id="s" x="-20%" y="-20%" width="140%" height="150%">
+        <feDropShadow dx="0" dy="2" stdDeviation="1.8" flood-opacity="0.28"/>
+      </filter>
+    </defs>
+    <path filter="url(#s)" d="M17 1C9.3 1 3 7.3 3 15c0 10.2 11.2 22.4 13 25.2.4.6 1.2.6 1.6 0C19.8 37.4 31 25.2 31 15 31 7.3 24.7 1 17 1z" fill="#2563eb" stroke="#ffffff" stroke-width="1.6"/>
+    <circle cx="17" cy="15" r="5.2" fill="#ffffff"/>
+  </svg>`
+)}`;
+
+const PIN_ICON = {
+  url: PIN_ICON_URL,
+  width: 34,
+  height: 42,
+  anchorY: 42,
+};
+
+function ensureMapLibreCss() {
+  if (typeof document === "undefined") return;
+  if (document.getElementById(MAPLIBRE_CSS_ID)) return;
+
+  const cssLink = document.createElement("link");
+  cssLink.id = MAPLIBRE_CSS_ID;
+  cssLink.rel = "stylesheet";
+  cssLink.href = "https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.css";
+  document.head.appendChild(cssLink);
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -67,34 +86,14 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-function loadLeafletAssets(onReady: () => void) {
-  if (typeof window === "undefined") return;
-
-  if (window.L) {
-    onReady();
-    return;
-  }
-
-  if (!document.getElementById(LEAFLET_CSS_ID)) {
-    const cssLink = document.createElement("link");
-    cssLink.id = LEAFLET_CSS_ID;
-    cssLink.rel = "stylesheet";
-    cssLink.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-    document.head.appendChild(cssLink);
-  }
-
-  const existingScript = document.getElementById(LEAFLET_SCRIPT_ID) as HTMLScriptElement | null;
-  if (existingScript) {
-    existingScript.addEventListener("load", onReady, { once: true });
-    return;
-  }
-
-  const script = document.createElement("script");
-  script.id = LEAFLET_SCRIPT_ID;
-  script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-  script.async = true;
-  script.addEventListener("load", onReady, { once: true });
-  document.body.appendChild(script);
+function hexToRgba(hexColor: string, alpha: number): [number, number, number, number] {
+  const hex = hexColor.replace("#", "");
+  return [
+    Number.parseInt(hex.slice(0, 2), 16),
+    Number.parseInt(hex.slice(2, 4), 16),
+    Number.parseInt(hex.slice(4, 6), 16),
+    alpha,
+  ];
 }
 
 function getRiskWeight(floodRisk: string | undefined): number {
@@ -118,7 +117,6 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value);
 }
 
-/** Infrastructure marker style: ⚡ Yellow / 🏭 Orange / 🚢 Blue / ⛏ Brown / 🔲 Purple square + confidence ring (solid = auto-verified, dashed = manual review). */
 function getInfrastructureStyle(type: string): {
   color: string;
   isSquare: boolean;
@@ -126,7 +124,6 @@ function getInfrastructureStyle(type: string): {
 } {
   const normalized = type.toLowerCase();
 
-  // ⚡ Yellow circle → Power plant / generation asset
   if (
     normalized.includes("power_plant") ||
     normalized.includes("generation") ||
@@ -137,7 +134,6 @@ function getInfrastructureStyle(type: string): {
     return { color: "#facc15", isSquare: false, typeLabel: "Power / Generation" };
   }
 
-  // 🏭 Orange circle → Industrial complex / SEZ (incl. refinery)
   if (
     normalized.includes("industrial") ||
     normalized.includes("special_economic_zone") ||
@@ -148,17 +144,14 @@ function getInfrastructureStyle(type: string): {
     return { color: "#f97316", isSquare: false, typeLabel: "Industrial / SEZ" };
   }
 
-  // 🚢 Blue circle → Port facility
   if (normalized.includes("port")) {
     return { color: "#3b82f6", isSquare: false, typeLabel: "Port Facility" };
   }
 
-  // ⛏ Brown circle → Mining operation
   if (normalized.includes("mining") || normalized.includes("mine")) {
     return { color: "#92400e", isSquare: false, typeLabel: "Mining" };
   }
 
-  // 🔲 Purple square → Data center / substation
   if (normalized.includes("data_center") || normalized.includes("substation")) {
     return { color: "#7e22ce", isSquare: true, typeLabel: "Data Center / Substation" };
   }
@@ -174,7 +167,6 @@ function getConstraintStyle(zone: NoGoZone): {
 } {
   const normalized = `${zone.severity ?? ""} ${zone.reason ?? ""} ${zone.description}`.toLowerCase();
 
-  // Red filled polygon (opacity 0.35) → ABSOLUTE NO-GO / Critical (Ankasa, Keta Lagoon)
   if (
     normalized.includes("absolute") ||
     normalized.includes("no-go") ||
@@ -189,7 +181,6 @@ function getConstraintStyle(zone: NoGoZone): {
     };
   }
 
-  // Orange filled polygon (opacity 0.25) → HIGH risk / re-route required
   if (normalized.includes("high") || normalized.includes("hard no-go")) {
     return {
       stroke: "#9a3412",
@@ -199,7 +190,6 @@ function getConstraintStyle(zone: NoGoZone): {
     };
   }
 
-  // Yellow filled polygon (opacity 0.20) → MEDIUM risk / mitigation required
   return {
     stroke: "#a16207",
     fill: "#facc15",
@@ -219,28 +209,87 @@ function getRecommendedVariant(routeVariants: RouteVariant[]): RouteVariant | nu
   );
 }
 
-/** Route optimization polyline style: Blue thick (V1), Orange/Green medium (V2/V3), Red thin dashed (V4/V5). */
 function getRouteVariantStyle(rank: number): {
   color: string;
-  weight: number;
-  dashArray: string | undefined;
+  width: number;
   label: string;
 } {
   switch (rank) {
     case 1:
-      return { color: "#2563eb", weight: 6, dashArray: undefined, label: "ROUTE-V1 Recommended" };
+      return { color: "#2563eb", width: 6, label: "ROUTE-V1 Recommended" };
     case 2:
-      return { color: "#f97316", weight: 4, dashArray: undefined, label: "ROUTE-V2 Inland detour" };
+      return { color: "#f97316", width: 4, label: "ROUTE-V2 Inland detour" };
     case 3:
-      return { color: "#16a34a", weight: 4, dashArray: undefined, label: "ROUTE-V3 Shortest path" };
+      return { color: "#16a34a", width: 4, label: "ROUTE-V3 Shortest path" };
     default:
-      return {
-        color: "#dc2626",
-        weight: 2,
-        dashArray: "8 6",
-        label: `ROUTE-V${rank} lower ranked`,
-      };
+      return { color: "#dc2626", width: 2, label: `ROUTE-V${rank} lower ranked` };
   }
+}
+
+function buildRouteTooltipHtml(variant: RouteVariant, isRecommended: boolean): string {
+  const breakdown = variant.scoringBreakdown;
+  return [
+    `<strong>${escapeHtml(variant.label)}</strong>`,
+    isRecommended ? "<strong>Recommended Route</strong>" : null,
+    variant.rank !== undefined ? `<strong>Rank</strong>: ${variant.rank}` : null,
+    variant.description ? `<strong>Description</strong>: ${escapeHtml(variant.description)}` : null,
+    variant.compositeScore !== undefined
+      ? `<strong>Composite Score</strong>: ${variant.compositeScore}`
+      : null,
+    variant.distanceKm !== undefined
+      ? `<strong>Distance</strong>: ${formatNumber(variant.distanceKm)} km`
+      : null,
+    variant.estimatedCostUsd !== undefined
+      ? `<strong>Net CAPEX</strong>: $${formatNumber(variant.estimatedCostUsd)}`
+      : null,
+    variant.grossCapexUsd !== undefined
+      ? `<strong>Gross CAPEX</strong>: $${formatNumber(variant.grossCapexUsd)}`
+      : null,
+    variant.coLocationSavingUsd !== undefined
+      ? `<strong>Co-location Savings</strong>: $${formatNumber(variant.coLocationSavingUsd)}`
+      : null,
+    variant.coLocationSavingPct !== undefined
+      ? `<strong>Co-location Savings %</strong>: ${variant.coLocationSavingPct}%`
+      : null,
+    variant.weightedAvgHighwayOverlapPct !== undefined
+      ? `<strong>Highway Overlap</strong>: ${variant.weightedAvgHighwayOverlapPct}%`
+      : null,
+    variant.straightLineOverheadPct !== undefined
+      ? `<strong>Straight-line Overhead</strong>: ${variant.straightLineOverheadPct}%`
+      : null,
+    variant.anchorLoadsWithin15Km !== undefined
+      ? `<strong>Anchor Loads (within 15km)</strong>: ${variant.anchorLoadsWithin15Km}`
+      : null,
+    variant.anchorLoadsDirectlyServed !== undefined
+      ? `<strong>Anchor Loads (direct)</strong>: ${variant.anchorLoadsDirectlyServed}`
+      : null,
+    breakdown?.capexScore !== undefined ? `<strong>CAPEX Score</strong>: ${breakdown.capexScore}` : null,
+    breakdown?.terrainScore !== undefined ? `<strong>Terrain Score</strong>: ${breakdown.terrainScore}` : null,
+    breakdown?.environmentalScore !== undefined
+      ? `<strong>Environmental Score</strong>: ${breakdown.environmentalScore}`
+      : null,
+    breakdown?.coLocationScore !== undefined
+      ? `<strong>Co-location Score</strong>: ${breakdown.coLocationScore}`
+      : null,
+    breakdown?.anchorLoadCoverage !== undefined
+      ? `<strong>Anchor Coverage Score</strong>: ${breakdown.anchorLoadCoverage}`
+      : null,
+    variant.equityIrrPct !== undefined ? `<strong>Equity IRR</strong>: ${variant.equityIrrPct}%` : null,
+    variant.projectIrrPct !== undefined ? `<strong>Project IRR</strong>: ${variant.projectIrrPct}%` : null,
+    variant.paybackYears !== undefined ? `<strong>Payback</strong>: ${variant.paybackYears} years` : null,
+    variant.throughputGwh !== undefined
+      ? `<strong>Year-5 Throughput</strong>: ${formatNumber(variant.throughputGwh)} GWh`
+      : null,
+    variant.revenueUsd !== undefined
+      ? `<strong>Year-5 Revenue</strong>: $${formatNumber(variant.revenueUsd)}`
+      : null,
+    variant.ebitdaUsd !== undefined
+      ? `<strong>Year-5 EBITDA</strong>: $${formatNumber(variant.ebitdaUsd)}`
+      : null,
+    variant.keyTradeoff ? `<strong>Tradeoff</strong>: ${escapeHtml(variant.keyTradeoff)}` : null,
+  ]
+    .filter((line): line is string => line !== null)
+    .join("<br/>");
 }
 
 function circlePolygon(center: [number, number], radiusKm: number): [number, number][] {
@@ -277,294 +326,323 @@ type MapPanelProps = {
   data?: MapOverlayData | null;
 };
 
-type LayerVisibility = {
-  corridor: boolean;
-  environmental: boolean;
-  terrain: boolean;
-  routes: boolean;
-  infrastructure: boolean;
-  points: boolean;
-};
-
-const DEFAULT_LAYER_VISIBILITY: LayerVisibility = {
-  corridor: true,
-  environmental: true,
-  terrain: true,
-  routes: true,
-  infrastructure: true,
-  points: true,
-};
-
-const LAYER_TOGGLE_OPTIONS: { key: keyof LayerVisibility; label: string }[] = [
-  { key: "corridor", label: "Corridor" },
-  { key: "terrain", label: "Terrain" },
-  { key: "environmental", label: "Environment" },
-  { key: "infrastructure", label: "Infrastructure" },
-  { key: "routes", label: "Route" },
-  { key: "points", label: "Pins" },
-];
-
 export function MapPanel({ data = null }: MapPanelProps) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<LeafletMapLike | null>(null);
-  const overlayLayerRef = useRef<LeafletLayerGroupLike | null>(null);
+  const mapRef = useRef<MapLibreMap | null>(null);
+  const overlayRef = useRef<MapboxOverlay | null>(null);
   const [isMapReady, setIsMapReady] = useState(false);
-  const [layerVisibility, setLayerVisibility] =
-    useState<LayerVisibility>(DEFAULT_LAYER_VISIBILITY);
+  const [layerVisibility, setLayerVisibility] = useState<LayerVisibility>(DEFAULT_LAYER_VISIBILITY);
 
   useEffect(() => {
-    loadLeafletAssets(() => setIsMapReady(true));
+    ensureMapLibreCss();
+    if (!mapContainerRef.current || mapRef.current) return;
+
+    const map = new maplibregl.Map({
+      container: mapContainerRef.current,
+      center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]],
+      zoom: DEFAULT_ZOOM,
+      style: {
+        version: 8,
+        sources: {
+          osm: {
+            type: "raster",
+            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            attribution: "© OpenStreetMap contributors",
+          },
+        },
+        layers: [{ id: "osm", type: "raster", source: "osm" }],
+      },
+    });
+
+    const onLoad = () => {
+      const overlay = new MapboxOverlay({ interleaved: true, layers: [] });
+      map.addControl(overlay);
+      overlayRef.current = overlay;
+      mapRef.current = map;
+      setIsMapReady(true);
+    };
+
+    map.on("load", onLoad);
+
+    return () => {
+      map.off("load", onLoad);
+      overlayRef.current = null;
+      map.remove();
+      mapRef.current = null;
+      setIsMapReady(false);
+    };
   }, []);
 
   useEffect(() => {
-    if (!isMapReady || mapRef.current || !mapContainerRef.current || !window.L) return;
-
-    const map = window.L.map(mapContainerRef.current, {
-      zoomControl: true,
-    });
-
-    window.L
-      .tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "&copy; OpenStreetMap contributors",
-        maxZoom: 19,
-      })
-      .addTo(map);
-
-    map.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
-    mapRef.current = map;
-    overlayLayerRef.current = window.L.layerGroup().addTo(map);
-    requestAnimationFrame(() => {
-      map.invalidateSize?.();
-    });
-
-    return () => {
-      map.remove();
-      mapRef.current = null;
-      overlayLayerRef.current = null;
-    };
-  }, [isMapReady]);
-
-  useEffect(() => {
     const map = mapRef.current;
-    const overlayLayer = overlayLayerRef.current;
-    const leaflet = window.L;
-    if (!isMapReady || !map || !overlayLayer || !leaflet) return;
+    const overlay = overlayRef.current;
 
-    map.invalidateSize?.();
-    overlayLayer.clearLayers();
+    if (!isMapReady || !map || !overlay) return;
 
     if (!data) {
-      map.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+      overlay.setProps({ layers: [] });
+      map.jumpTo({ center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]], zoom: DEFAULT_ZOOM });
       return;
     }
 
     const boundsPoints: [number, number][] = [];
+    const layers: unknown[] = [];
 
-    // 2. Corridor rectangle/polygon
-    if (layerVisibility.corridor && data.polygon.length > 0) {
-      const corridorLayer = leaflet.polygon(data.polygon, {
-        color: "#2563eb",
-        fillColor: "#3b82f6",
-        fillOpacity: 0.12,
-        weight: 1.6,
-      });
-
-      const terrainMetaLines: string[] = [];
+    if (layerVisibility.corridor && data.polygon.length > 2) {
+      boundsPoints.push(...data.polygon);
+      const corridorPopupLines: string[] = [];
       if (data.corridorId) {
-        terrainMetaLines.push(`<strong>Corridor</strong>: ${escapeHtml(data.corridorId)}`);
+        corridorPopupLines.push(`<strong>Corridor</strong>: ${escapeHtml(data.corridorId)}`);
       }
       if (typeof data.terrainAnalysis?.totalExcavationEstimateM3 === "number") {
-        terrainMetaLines.push(
+        corridorPopupLines.push(
           `<strong>Estimated Excavation</strong>: ${formatNumber(data.terrainAnalysis.totalExcavationEstimateM3)} m3`
         );
       }
       if (data.terrainAnalysis?.engineeringRecommendation) {
-        terrainMetaLines.push(
+        corridorPopupLines.push(
           `<strong>Recommendation</strong>: ${escapeHtml(data.terrainAnalysis.engineeringRecommendation)}`
         );
       }
-      if (terrainMetaLines.length > 0) {
-        corridorLayer.bindPopup?.(terrainMetaLines.join("<br/>"));
-      }
 
-      overlayLayer.addLayer(corridorLayer);
-      boundsPoints.push(...data.polygon);
+      layers.push(
+        new GeoJsonLayer({
+          id: "corridor-polygon",
+          data: {
+            type: "Feature",
+            properties: { popupHtml: corridorPopupLines.join("<br/>") },
+            geometry: {
+              type: "Polygon",
+              coordinates: [data.polygon.map(([lat, lng]) => [lng, lat])],
+            },
+          } as Feature<Polygon, { popupHtml: string }>,
+          pickable: true,
+          stroked: true,
+          filled: true,
+          getLineColor: [37, 99, 235, 220],
+          getFillColor: [59, 130, 246, 45],
+          lineWidthMinPixels: 2,
+        })
+      );
     }
 
-    // 3. Environmental constraints polygons
     if (layerVisibility.environmental) {
-      for (const zone of data.noGoZones ?? []) {
-        const style = getConstraintStyle(zone);
-        const zoneLines = [
-          zone.zoneId ? `<strong>Zone ID</strong>: ${escapeHtml(zone.zoneId)}` : null,
-          `<strong>${escapeHtml(style.label)}</strong>: ${escapeHtml(zone.description)}`,
-          zone.radiusKm !== undefined ? `<strong>Radius</strong>: ${zone.radiusKm} km` : null,
-          zone.reason ? `<strong>Reason</strong>: ${escapeHtml(zone.reason)}` : null,
-        ]
-          .filter((line): line is string => line !== null)
-          .join("<br/>");
+      const features = (data.noGoZones ?? [])
+        .map((zone) => {
+          const style = getConstraintStyle(zone);
+          const polygon =
+            zone.polygon && zone.polygon.length > 2
+              ? zone.polygon
+              : zone.latitude !== undefined && zone.longitude !== undefined && zone.radiusKm !== undefined
+                ? circlePolygon([zone.latitude, zone.longitude], zone.radiusKm)
+                : null;
+          if (!polygon || polygon.length < 3) return null;
 
-        const zonePolygon =
-          zone.polygon && zone.polygon.length > 2
-            ? zone.polygon
-            : zone.latitude !== undefined && zone.longitude !== undefined && zone.radiusKm !== undefined
-              ? circlePolygon([zone.latitude, zone.longitude], zone.radiusKm)
-              : null;
+          boundsPoints.push(...polygon);
+          const popupHtml = [
+            zone.zoneId ? `<strong>Zone ID</strong>: ${escapeHtml(zone.zoneId)}` : null,
+            `<strong>${escapeHtml(style.label)}</strong>: ${escapeHtml(zone.description)}`,
+            zone.radiusKm !== undefined ? `<strong>Radius</strong>: ${zone.radiusKm} km` : null,
+            zone.reason ? `<strong>Reason</strong>: ${escapeHtml(zone.reason)}` : null,
+          ]
+            .filter((line): line is string => line !== null)
+            .join("<br/>");
 
-        if (zonePolygon && zonePolygon.length > 2) {
-          const polygonLayer = leaflet.polygon(zonePolygon, {
-            color: style.stroke,
-            fillColor: style.fill,
-            fillOpacity: style.opacity,
-            weight: 1.4,
-            dashArray: "4 6",
-          });
-          polygonLayer.bindPopup?.(zoneLines);
-          overlayLayer.addLayer(polygonLayer);
-          boundsPoints.push(...zonePolygon);
-        }
+          return {
+            type: "Feature",
+            properties: {
+              popupHtml,
+              fillColor: hexToRgba(style.fill, Math.round(style.opacity * 255)),
+              strokeColor: hexToRgba(style.stroke, 230),
+            },
+            geometry: {
+              type: "Polygon",
+              coordinates: [polygon.map(([lat, lng]) => [lng, lat])],
+            },
+          };
+        })
+        .filter((feature) => feature !== null);
+
+      if (features.length > 0) {
+        layers.push(
+          new GeoJsonLayer({
+            id: "environmental-zones",
+            data: { type: "FeatureCollection", features } as FeatureCollection,
+            pickable: true,
+            stroked: true,
+            filled: true,
+            getLineColor: (feature: { properties?: { strokeColor?: [number, number, number, number] } }) =>
+              feature.properties?.strokeColor ?? [161, 98, 7, 230],
+            getFillColor: (feature: { properties?: { fillColor?: [number, number, number, number] } }) =>
+              feature.properties?.fillColor ?? [250, 204, 21, 50],
+            lineWidthMinPixels: 1.5,
+          })
+        );
       }
     }
 
-    // 4. Terrain difficulty line segments
     if (layerVisibility.terrain) {
-      for (const segment of data.terrainAnalysis?.segmentAnalysis ?? []) {
-        if (!segment.startCoordinate || !segment.endCoordinate) continue;
+      const terrainData = (data.terrainAnalysis?.segmentAnalysis ?? [])
+        .filter((segment) => segment.startCoordinate && segment.endCoordinate)
+        .map((segment) => {
+          const start: [number, number] = [
+            segment.startCoordinate!.latitude,
+            segment.startCoordinate!.longitude,
+          ];
+          const end: [number, number] = [segment.endCoordinate!.latitude, segment.endCoordinate!.longitude];
+          boundsPoints.push(start, end);
+          const color = getTerrainColor(segment.difficultyScore, segment.floodRisk);
 
-        const start: [number, number] = [
-          segment.startCoordinate.latitude,
-          segment.startCoordinate.longitude,
-        ];
-        const end: [number, number] = [
-          segment.endCoordinate.latitude,
-          segment.endCoordinate.longitude,
-        ];
+          const popupHtml = [
+            segment.segmentId ? `<strong>ID</strong>: ${escapeHtml(segment.segmentId)}` : null,
+            segment.label ? `<strong>Label</strong>: ${escapeHtml(segment.label)}` : null,
+            segment.country ? `<strong>Country</strong>: ${escapeHtml(segment.country)}` : null,
+            `<strong>Segment</strong>: ${segment.startKm}-${segment.endKm} km`,
+          ]
+            .filter((line): line is string => line !== null)
+            .join("<br/>");
 
-        const color = getTerrainColor(segment.difficultyScore, segment.floodRisk);
-        const segmentDetails = [
-          segment.segmentId ? `<strong>ID</strong>: ${escapeHtml(segment.segmentId)}` : null,
-          segment.label ? `<strong>Label</strong>: ${escapeHtml(segment.label)}` : null,
-          segment.country ? `<strong>Country</strong>: ${escapeHtml(segment.country)}` : null,
-          `<strong>Segment</strong>: ${segment.startKm}-${segment.endKm} km`,
-          segment.difficultyScore !== undefined
-            ? `<strong>Difficulty</strong>: ${segment.difficultyScore}/10`
-            : null,
-          segment.avgSlope !== undefined ? `<strong>Avg Slope</strong>: ${segment.avgSlope}%` : null,
-          segment.soilStability
-            ? `<strong>Soil Stability</strong>: ${escapeHtml(segment.soilStability)}`
-            : null,
-          segment.floodRisk ? `<strong>Flood Risk</strong>: ${escapeHtml(segment.floodRisk)}` : null,
-        ]
-          .filter((line): line is string => line !== null)
-          .join("<br/>");
-
-        const segmentLine = leaflet.polyline([start, end], {
-          color,
-          weight: 5,
-          opacity: 0.9,
+          return {
+            path: [
+              [start[1], start[0]],
+              [end[1], end[0]],
+            ] as [number, number][],
+            color: hexToRgba(color, 230),
+            popupHtml,
+          };
         });
-        segmentLine.bindPopup?.(segmentDetails);
-        overlayLayer.addLayer(segmentLine);
-        boundsPoints.push(start, end);
+
+      if (terrainData.length > 0) {
+        layers.push(
+          new PathLayer({
+            id: "terrain-segments",
+            data: terrainData,
+            pickable: true,
+            getPath: (d: { path: [number, number][] }) => d.path,
+            getColor: (d: { color: [number, number, number, number] }) => d.color,
+            getWidth: 5,
+            widthUnits: "pixels",
+          })
+        );
       }
     }
 
     const routeVariants = layerVisibility.routes ? data.routeVariants ?? [] : [];
     const recommendedVariant = getRecommendedVariant(routeVariants);
 
-    // 5. Ranked route variants (Orange V2, Green V3, Red thin dashed V4/V5 — recommended V1 drawn in step 7)
-    for (const variant of routeVariants) {
-      if (variant.route.length < 2) continue;
-      const rank = variant.rank ?? 99;
-      const isRecommended = recommendedVariant?.variantId
-        ? variant.variantId === recommendedVariant.variantId
-        : recommendedVariant === variant;
-
-      if (isRecommended) continue;
-
-      const style = getRouteVariantStyle(rank);
-      const routeLine = leaflet.polyline(variant.route, {
-        color: style.color,
-        weight: style.weight,
-        opacity: 0.88,
-        dashArray: style.dashArray,
+    const routesData = routeVariants
+      .filter((variant) => {
+        if (!recommendedVariant) return true;
+        return recommendedVariant.variantId
+          ? variant.variantId !== recommendedVariant.variantId
+          : variant !== recommendedVariant;
+      })
+      .filter((variant) => variant.route.length >= 2)
+      .map((variant) => {
+        boundsPoints.push(...variant.route);
+        const style = getRouteVariantStyle(variant.rank ?? 99);
+        return {
+          path: variant.route.map(([lat, lng]) => [lng, lat] as [number, number]),
+          color: hexToRgba(style.color, 225),
+          width: style.width,
+          popupHtml: buildRouteTooltipHtml(variant, false),
+        };
       });
 
-      const routePopupLines = [
-        `<strong>${escapeHtml(variant.label)}</strong>`,
-        variant.rank !== undefined ? `<strong>Rank</strong>: ${variant.rank}` : null,
-        variant.distanceKm !== undefined
-          ? `<strong>Distance</strong>: ${formatNumber(variant.distanceKm)} km`
-          : null,
-        variant.estimatedDurationHours !== undefined
-          ? `<strong>Duration</strong>: ${variant.estimatedDurationHours} hrs`
-          : null,
-        variant.estimatedCostUsd !== undefined
-          ? `<strong>Net CAPEX</strong>: $${formatNumber(variant.estimatedCostUsd)}`
-          : null,
-      ]
-        .filter((line): line is string => line !== null)
-        .join("<br/>");
-
-      routeLine.bindPopup?.(routePopupLines);
-      overlayLayer.addLayer(routeLine);
-      boundsPoints.push(...variant.route);
+    if (routesData.length > 0) {
+      layers.push(
+        new PathLayer({
+          id: "route-variants",
+          data: routesData,
+          pickable: true,
+          getPath: (d: { path: [number, number][] }) => d.path,
+          getColor: (d: { color: [number, number, number, number] }) => d.color,
+          getWidth: (d: { width: number }) => d.width,
+          widthUnits: "pixels",
+        })
+      );
     }
 
-    // 6. Infrastructure markers: typed by color/shape (yellow=power, orange=industrial, blue=port, brown=mining, purple square=substation/data center); confidence ring = solid fill (auto-verified), dashed border (manual review)
+    if (recommendedVariant && recommendedVariant.route.length >= 2) {
+      boundsPoints.push(...recommendedVariant.route);
+      const style = getRouteVariantStyle(recommendedVariant.rank ?? 1);
+      const path = recommendedVariant.route.map(([lat, lng]) => [lng, lat] as [number, number]);
+
+      layers.push(
+        new PathLayer({
+          id: "route-recommended-halo",
+          data: [{ path }],
+          pickable: false,
+          getPath: (d: { path: [number, number][] }) => d.path,
+          getColor: [147, 197, 253, 140],
+          getWidth: 10,
+          widthUnits: "pixels",
+        })
+      );
+
+      layers.push(
+        new PathLayer({
+          id: "route-recommended",
+          data: [{ path, popupHtml: buildRouteTooltipHtml(recommendedVariant, true) }],
+          pickable: true,
+          getPath: (d: { path: [number, number][] }) => d.path,
+          getColor: hexToRgba(style.color, 245),
+          getWidth: style.width,
+          widthUnits: "pixels",
+        })
+      );
+    }
+
     if (layerVisibility.infrastructure) {
+      const circles: Array<{
+        position: [number, number];
+        fillColor: [number, number, number, number];
+        popupHtml: string;
+      }> = [];
+      const squares: Array<{
+        polygon: [number, number][];
+        fillColor: [number, number, number, number];
+        popupHtml: string;
+      }> = [];
+      const bboxes: Array<{
+        polygon: [number, number][];
+        fillColor: [number, number, number, number];
+        lineColor: [number, number, number, number];
+        popupHtml: string;
+      }> = [];
+
       for (const detection of data.infrastructureDetections ?? []) {
-        const latLng: [number, number] = [detection.latitude, detection.longitude];
-        boundsPoints.push(latLng);
+        const point: [number, number] = [detection.latitude, detection.longitude];
+        boundsPoints.push(point);
 
         const style = getInfrastructureStyle(detection.type);
         const status = (detection.verificationStatus ?? "").toLowerCase();
-        const isManualReview = status.includes("manual"); // dashed border = manual_review_required; solid = auto_verified
-        const popupLines = [
+        const isManual = status.includes("manual");
+        const fillColor = hexToRgba(style.color, isManual ? 150 : 235);
+
+        const popupHtml = [
           `<strong>${escapeHtml(detection.label)}</strong>`,
           `<strong>Type</strong>: ${escapeHtml(style.typeLabel)}`,
-          detection.subtype ? `<strong>Subtype</strong>: ${escapeHtml(detection.subtype)}` : null,
-          detection.detectionId ? `<strong>ID</strong>: ${escapeHtml(detection.detectionId)}` : null,
-          detection.confidence !== undefined
-            ? `<strong>Confidence</strong>: ${Math.round(detection.confidence * 100)}%`
-            : null,
           detection.verificationStatus
             ? `<strong>Verification</strong>: ${escapeHtml(detection.verificationStatus.replaceAll("_", " "))}`
-            : null,
-          detection.gridInterconnectionPriority
-            ? `<strong>Grid Priority</strong>: ${escapeHtml(detection.gridInterconnectionPriority)}`
-            : null,
-          detection.estimatedPowerDemandMw !== undefined
-            ? `<strong>Estimated Demand</strong>: ${formatNumber(detection.estimatedPowerDemandMw)} MW`
-            : null,
-          detection.estimatedGenerationCapacityMw !== undefined
-            ? `<strong>Generation Capacity</strong>: ${formatNumber(detection.estimatedGenerationCapacityMw)} MW`
             : null,
         ]
           .filter((line): line is string => line !== null)
           .join("<br/>");
 
         if (style.isSquare) {
-          const markerLayer = leaflet.polygon(squareAroundPoint(latLng, 0.25), {
-            color: "#ffffff",
-            weight: 2,
-            fillColor: style.color,
-            fillOpacity: isManualReview ? 0.55 : 0.95,
-            dashArray: isManualReview ? "4 4" : undefined, // confidence ring: dashed = manual review
+          squares.push({
+            polygon: squareAroundPoint(point, 0.25).map(([lat, lng]) => [lng, lat]),
+            fillColor,
+            popupHtml,
           });
-          markerLayer.bindPopup?.(popupLines);
-          overlayLayer.addLayer(markerLayer);
         } else {
-          const marker = leaflet.circleMarker(latLng, {
-            radius: 6,
-            color: "#ffffff",
-            weight: 2,
-            fillColor: style.color,
-            fillOpacity: isManualReview ? 0.55 : 0.95,
-            dashArray: isManualReview ? "4 4" : undefined, // confidence ring: solid = auto-verified, dashed = manual review
+          circles.push({
+            position: [point[1], point[0]],
+            fillColor,
+            popupHtml,
           });
-          marker.bindPopup(popupLines);
-          overlayLayer.addLayer(marker);
         }
 
         if (detection.bbox) {
@@ -574,91 +652,135 @@ export function MapPanel({ data = null }: MapPanelProps) {
             [detection.bbox.bottomRight.latitude, detection.bbox.bottomRight.longitude],
             [detection.bbox.bottomRight.latitude, detection.bbox.topLeft.longitude],
           ];
-          const bboxLayer = leaflet.polygon(bboxPolygon, {
-            color: style.color,
-            fillColor: style.color,
-            fillOpacity: 0.1,
-            weight: 1,
-          });
-          bboxLayer.bindPopup?.(popupLines);
-          overlayLayer.addLayer(bboxLayer);
           boundsPoints.push(...bboxPolygon);
+          bboxes.push({
+            polygon: bboxPolygon.map(([lat, lng]) => [lng, lat]),
+            fillColor: [fillColor[0], fillColor[1], fillColor[2], 30],
+            lineColor: [fillColor[0], fillColor[1], fillColor[2], 190],
+            popupHtml,
+          });
         }
       }
-    }
 
-    // 7. Recommended route on top: Blue (thick, solid) → ROUTE-V1 Recommended
-    if (recommendedVariant && recommendedVariant.route.length >= 2) {
-      const style = getRouteVariantStyle(recommendedVariant.rank ?? 1);
-      const halo = leaflet.polyline(recommendedVariant.route, {
-        color: "#93c5fd",
-        weight: 10,
-        opacity: 0.5,
-      });
-      overlayLayer.addLayer(halo);
-
-      const recommendedLine = leaflet.polyline(recommendedVariant.route, {
-        color: style.color,
-        weight: style.weight,
-        opacity: 0.95,
-        dashArray: style.dashArray,
-      });
-      const routePopupLines = [
-        `<strong>${escapeHtml(recommendedVariant.label)}</strong>`,
-        `<strong>Recommended Route</strong> (${style.label})`,
-        recommendedVariant.rank !== undefined
-          ? `<strong>Rank</strong>: ${recommendedVariant.rank}`
-          : null,
-        recommendedVariant.distanceKm !== undefined
-          ? `<strong>Distance</strong>: ${formatNumber(recommendedVariant.distanceKm)} km`
-          : null,
-        recommendedVariant.estimatedCostUsd !== undefined
-          ? `<strong>Net CAPEX</strong>: $${formatNumber(recommendedVariant.estimatedCostUsd)}`
-          : null,
-      ]
-        .filter((line): line is string => line !== null)
-        .join("<br/>");
-      recommendedLine.bindPopup?.(routePopupLines);
-      overlayLayer.addLayer(recommendedLine);
-      boundsPoints.push(...recommendedVariant.route);
-    }
-
-    // 8. Start / end pins
-    if (layerVisibility.points) {
-      for (const point of data.points) {
-        const latLng: [number, number] = [point.latitude, point.longitude];
-        boundsPoints.push(latLng);
-        const safeLabel = escapeHtml(point.label);
-        const marker = leaflet.marker(latLng).bindPopup(
-          `<strong>${safeLabel}</strong>${
-            point.confidence ? `<br/>Confidence: ${Math.round(point.confidence * 100)}%` : ""
-          }`
+      if (circles.length > 0) {
+        layers.push(
+          new ScatterplotLayer({
+            id: "infra-circles",
+            data: circles,
+            pickable: true,
+            getPosition: (d: { position: [number, number] }) => d.position,
+            getRadius: 7000,
+            radiusUnits: "meters",
+            getFillColor: (d: { fillColor: [number, number, number, number] }) => d.fillColor,
+            getLineColor: [255, 255, 255, 255],
+            lineWidthMinPixels: 2,
+            stroked: true,
+          })
         );
-        overlayLayer.addLayer(marker);
+      }
+
+      if (squares.length > 0) {
+        layers.push(
+          new PolygonLayer({
+            id: "infra-squares",
+            data: squares,
+            pickable: true,
+            getPolygon: (d: { polygon: [number, number][] }) => d.polygon,
+            getFillColor: (d: { fillColor: [number, number, number, number] }) => d.fillColor,
+            getLineColor: [255, 255, 255, 255],
+            lineWidthMinPixels: 2,
+            stroked: true,
+            filled: true,
+          })
+        );
+      }
+
+      if (bboxes.length > 0) {
+        layers.push(
+          new PolygonLayer({
+            id: "infra-bboxes",
+            data: bboxes,
+            pickable: true,
+            getPolygon: (d: { polygon: [number, number][] }) => d.polygon,
+            getFillColor: (d: { fillColor: [number, number, number, number] }) => d.fillColor,
+            getLineColor: (d: { lineColor: [number, number, number, number] }) => d.lineColor,
+            lineWidthMinPixels: 1,
+            stroked: true,
+            filled: true,
+          })
+        );
       }
     }
+
+    if (layerVisibility.points && data.points.length > 0) {
+      const pointData = data.points.map((point) => {
+        boundsPoints.push([point.latitude, point.longitude]);
+        return {
+          position: [point.longitude, point.latitude] as [number, number],
+          popupHtml: `<strong>${escapeHtml(point.label)}</strong>${
+            point.confidence ? `<br/>Confidence: ${Math.round(point.confidence * 100)}%` : ""
+          }`,
+        };
+      });
+
+      layers.push(
+        new IconLayer({
+          id: "map-pins",
+          data: pointData,
+          pickable: true,
+          getPosition: (d: { position: [number, number] }) => d.position,
+          getIcon: () => PIN_ICON,
+          getSize: 34,
+          sizeUnits: "pixels",
+        })
+      );
+    }
+
+    overlay.setProps({
+      layers: layers as never[],
+      getTooltip: ({ object }: { object?: OverlayObject }) => {
+        const popupHtml = object?.popupHtml ?? object?.properties?.popupHtml;
+        if (!popupHtml) return null;
+        return {
+          html: popupHtml,
+          style: {
+            backgroundColor: "#ffffff",
+            color: "#111827",
+            borderRadius: "10px",
+            border: "1px solid #e5e7eb",
+            padding: "8px 10px",
+            boxShadow: "0 10px 20px rgba(0, 0, 0, 0.12)",
+            maxWidth: "280px",
+          },
+        };
+      },
+    });
 
     if (boundsPoints.length > 0) {
-      const bounds = leaflet.latLngBounds(boundsPoints);
-      if (bounds.isValid()) {
-        map.fitBounds(bounds.pad(0.2), { animate: true });
-        return;
+      let minLat = Number.POSITIVE_INFINITY;
+      let maxLat = Number.NEGATIVE_INFINITY;
+      let minLng = Number.POSITIVE_INFINITY;
+      let maxLng = Number.NEGATIVE_INFINITY;
+
+      for (const [lat, lng] of boundsPoints) {
+        minLat = Math.min(minLat, lat);
+        maxLat = Math.max(maxLat, lat);
+        minLng = Math.min(minLng, lng);
+        maxLng = Math.max(maxLng, lng);
       }
+
+      map.fitBounds(
+        [
+          [minLng, minLat],
+          [maxLng, maxLat],
+        ],
+        { padding: 48, duration: 900 }
+      );
+      return;
     }
+
+    map.jumpTo({ center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]], zoom: DEFAULT_ZOOM });
   }, [data, isMapReady, layerVisibility]);
-
-  useEffect(() => {
-    if (!isMapReady) return;
-
-    const handleResize = () => {
-      mapRef.current?.invalidateSize?.();
-    };
-
-    window.addEventListener("resize", handleResize);
-    return () => {
-      window.removeEventListener("resize", handleResize);
-    };
-  }, [isMapReady]);
 
   return (
     <div className="h-full w-full bg-muted/20">
@@ -669,11 +791,8 @@ export function MapPanel({ data = null }: MapPanelProps) {
             Loading map...
           </div>
         )}
-        <div className="pointer-events-none absolute bottom-3 left-1/2 z-[500] -translate-x-1/2 px-2">
-          <div className="pointer-events-auto inline-flex max-w-[calc(100vw-1rem)] flex-wrap items-center gap-1.5 rounded-2xl border border-white/60 bg-background/90 p-2 shadow-xl backdrop-blur-md">
-            <span className="mr-1 rounded-full bg-muted px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-              Layers
-            </span>
+        <div className="pointer-events-none absolute bottom-3 left-0 right-0 z-[500] px-2">
+          <div className="pointer-events-auto mx-auto flex w-fit max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 rounded-2xl border border-white/60 bg-background/90 p-2 shadow-xl backdrop-blur-md">
             {LAYER_TOGGLE_OPTIONS.map((option) => {
               const isSelected = layerVisibility[option.key];
               return (
