@@ -9,11 +9,7 @@ import maplibregl, { Map as MapLibreMap, Popup as MapLibrePopup } from "maplibre
 import type { Feature, FeatureCollection, Polygon } from "geojson";
 
 import type {
-  BankabilityProfile,
-  CurrentDemandProfile,
-  GrowthTrajectoryProfile,
   MapOverlayData,
-  MapPoint,
   NoGoZone,
   RouteVariant,
 } from "@/lib/map-overlay";
@@ -24,7 +20,6 @@ type LayerVisibility = {
   terrain: boolean;
   routes: boolean;
   infrastructure: boolean;
-  points: boolean;
   economicGaps: boolean;
   opportunities: boolean;
 };
@@ -37,21 +32,6 @@ type OverlayObject = {
 };
 
 type SectorKey = "Energy" | "Mining" | "Agriculture" | "Industrial/Ports" | "Digital";
-type AnchorPointSelection = {
-  name: string;
-  sector: SectorKey;
-  country: string;
-  latitude: number;
-  longitude: number;
-};
-
-type PointLayerDatum = {
-  position: [number, number];
-  popupHtml: string;
-  icon: { url: string; width: number; height: number; anchorY: number };
-  anchorSelection?: AnchorPointSelection;
-  size: number;
-};
 type InfrastructurePointDatum = {
   position: [number, number];
   popupHtml: string;
@@ -71,14 +51,6 @@ type OpportunityFilter = {
   phase: "all" | "Phase 1" | "Phase 2" | "Phase 3";
   topN: 5 | 10 | 15 | 24;
 };
-type AnchorListItem = {
-  anchorId: string;
-  name: string;
-  sector: SectorKey;
-  country: string;
-  latitude: number;
-  longitude: number;
-};
 
 const DEFAULT_CENTER: [number, number] = [6.0, -0.3];
 const DEFAULT_ZOOM = 5;
@@ -87,6 +59,7 @@ const FILTER_PANEL_POSITION_STORAGE_KEY = "corridor:map:filter-panel-position";
 const FILTER_PANEL_MINIMIZED_STORAGE_KEY = "corridor:map:filter-panel-minimized";
 const LAYER_PANEL_POSITION_STORAGE_KEY = "corridor:map:layer-panel-position";
 const LAYER_PANEL_MINIMIZED_STORAGE_KEY = "corridor:map:layer-panel-minimized";
+const LAYER_VISIBILITY_STORAGE_KEY = "corridor:map:layer-visibility";
 
 const DEFAULT_LAYER_VISIBILITY: LayerVisibility = {
   corridor: true,
@@ -94,7 +67,6 @@ const DEFAULT_LAYER_VISIBILITY: LayerVisibility = {
   terrain: true,
   routes: true,
   infrastructure: true,
-  points: true,
   economicGaps: true,
   opportunities: true,
 };
@@ -105,7 +77,6 @@ const LAYER_TOGGLE_OPTIONS: { key: keyof LayerVisibility; label: string }[] = [
   { key: "environmental", label: "Environment" },
   { key: "infrastructure", label: "Infrastructure" },
   { key: "routes", label: "Route" },
-  { key: "points", label: "Pins" },
   { key: "economicGaps", label: "Economic Gaps" },
   { key: "opportunities", label: "Opportunities" },
 ];
@@ -131,34 +102,6 @@ const PIN_ICON_SHAPE = {
   height: 42,
   anchorY: 42,
 };
-
-const SECTOR_COLORS: Record<SectorKey, string> = {
-  Energy: "#dc2626",
-  Mining: "#eab308",
-  Agriculture: "#16a34a",
-  "Industrial/Ports": "#2563eb",
-  Digital: "#9333ea",
-};
-
-function normalizeAnchorSector(value: string | undefined): SectorKey {
-  const normalized = (value ?? "").toLowerCase();
-  if (normalized.includes("energy")) return "Energy";
-  if (normalized.includes("mining")) return "Mining";
-  if (normalized.includes("agri")) return "Agriculture";
-  if (normalized.includes("industrial") || normalized.includes("port")) {
-    return "Industrial/Ports";
-  }
-  if (normalized.includes("digital")) return "Digital";
-  return "Industrial/Ports";
-}
-
-function formatCoordinate(value: number): string {
-  return value.toFixed(3);
-}
-
-function formatStatus(value: string): string {
-  return value.replaceAll("_", " ");
-}
 
 function formatMw(value: number): string {
   return new Intl.NumberFormat(undefined, {
@@ -202,18 +145,29 @@ function readStoredBoolean(storageKey: string, fallback = false): boolean {
   }
 }
 
-function formatLoadFactor(value: number): string {
-  return new Intl.NumberFormat(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
-}
+function readStoredLayerVisibility(): LayerVisibility {
+  if (typeof window === "undefined") return DEFAULT_LAYER_VISIBILITY;
+  const raw = window.localStorage.getItem(LAYER_VISIBILITY_STORAGE_KEY);
+  if (!raw) return DEFAULT_LAYER_VISIBILITY;
 
-function formatBankabilityScore(value: number): string {
-  return new Intl.NumberFormat(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return DEFAULT_LAYER_VISIBILITY;
+
+    const record = parsed as Record<string, unknown>;
+    const normalized: LayerVisibility = { ...DEFAULT_LAYER_VISIBILITY };
+
+    for (const key of Object.keys(DEFAULT_LAYER_VISIBILITY) as Array<keyof LayerVisibility>) {
+      const value = record[key];
+      if (typeof value === "boolean") {
+        normalized[key] = value;
+      }
+    }
+
+    return normalized;
+  } catch {
+    return DEFAULT_LAYER_VISIBILITY;
+  }
 }
 
 function isGenerationText(value: string | undefined): boolean {
@@ -229,26 +183,6 @@ function isGenerationText(value: string | undefined): boolean {
     normalized.includes("ocgt") ||
     normalized.includes("dam")
   );
-}
-
-function isGenerationPoint(point: MapPoint): boolean {
-  const sector = (point.sector ?? "").toLowerCase();
-  if (isGenerationText(point.subSector) || isGenerationText(point.label)) return true;
-  return sector.includes("energy") && isGenerationText(point.subSector ?? point.label);
-}
-
-function isAnchorLoadPoint(point: MapPoint): boolean {
-  if (isGenerationPoint(point)) return false;
-  return Boolean(point.anchorId || point.sector || point.subSector);
-}
-
-function buildAnchorPopupHtml(anchor: AnchorListItem): string {
-  return [
-    `<strong>${escapeHtml(anchor.name)}</strong>`,
-    `<strong>Sector</strong>: ${escapeHtml(anchor.sector)}`,
-    `<strong>Country</strong>: ${escapeHtml(anchor.country)}`,
-    `<strong>Coordinates</strong>: ${formatCoordinate(anchor.latitude)}, ${formatCoordinate(anchor.longitude)}`,
-  ].join("<br/>");
 }
 
 function ensureMapLibreCss() {
@@ -570,7 +504,9 @@ export function MapPanel({ data = null }: MapPanelProps) {
   const [isLayerToggleMinimized, setIsLayerToggleMinimized] = useState(() =>
     readStoredBoolean(LAYER_PANEL_MINIMIZED_STORAGE_KEY, false)
   );
-  const [layerVisibility, setLayerVisibility] = useState<LayerVisibility>(DEFAULT_LAYER_VISIBILITY);
+  const [layerVisibility, setLayerVisibility] = useState<LayerVisibility>(() =>
+    readStoredLayerVisibility()
+  );
   const [infrastructureFilter, setInfrastructureFilter] = useState<InfrastructureCategoryFilter>({
     value: "all",
   });
@@ -584,20 +520,6 @@ export function MapPanel({ data = null }: MapPanelProps) {
     phase: "all",
     topN: 10,
   });
-  const sectorIcons = useMemo(
-    () =>
-      Object.fromEntries(
-        Object.entries(SECTOR_COLORS).map(([sector, color]) => [
-          sector,
-          { ...PIN_ICON_SHAPE, url: createPinIconUrl(color) },
-        ])
-      ) as Record<SectorKey, { url: string; width: number; height: number; anchorY: number }>,
-    []
-  );
-  const defaultPinIcon = useMemo(
-    () => ({ ...PIN_ICON_SHAPE, url: createPinIconUrl("#2563eb") }),
-    []
-  );
   const filteredInfrastructureDetections = useMemo(() => {
     const detections = data?.infrastructureDetections ?? [];
     if (infrastructureFilter.value === "all") return detections;
@@ -610,21 +532,6 @@ export function MapPanel({ data = null }: MapPanelProps) {
           (detection.isGenerationAsset === true || isGenerationText(detection.type)))
     );
   }, [data?.infrastructureDetections, infrastructureFilter]);
-  const filteredPoints = useMemo(() => {
-    const points = data?.points ?? [];
-    if (infrastructureFilter.value === "all") return points;
-    return points.filter(
-      (point) =>
-        (infrastructureFilter.value === "anchor_load" && isAnchorLoadPoint(point)) ||
-        (infrastructureFilter.value === "generation" && isGenerationPoint(point))
-    );
-  }, [data?.points, infrastructureFilter]);
-  const visiblePoints = useMemo(() => {
-    if (layerVisibility.infrastructure) return filteredPoints;
-    return filteredPoints.filter(
-      (point) => !isAnchorLoadPoint(point) && !isGenerationPoint(point)
-    );
-  }, [filteredPoints, layerVisibility.infrastructure]);
   const filteredEconomicGaps = useMemo(() => {
     const gaps = data?.economicGaps ?? [];
     return gaps.filter((gap) => {
@@ -655,56 +562,6 @@ export function MapPanel({ data = null }: MapPanelProps) {
       return withinTopN && matchesPhase;
     });
   }, [data?.prioritizedOpportunities, opportunityFilter]);
-  const demandByAnchorId = useMemo(() => {
-    const map = new Map<string, CurrentDemandProfile>();
-    for (const profile of data?.currentDemand?.demandProfiles ?? []) {
-      map.set(profile.anchorId, profile);
-    }
-    return map;
-  }, [data?.currentDemand?.demandProfiles]);
-  const bankabilityByAnchorId = useMemo(() => {
-    const map = new Map<string, BankabilityProfile>();
-    for (const profile of data?.bankability?.profiles ?? []) {
-      map.set(profile.anchorId, profile);
-    }
-    return map;
-  }, [data?.bankability?.profiles]);
-  const growthByAnchorId = useMemo(() => {
-    const map = new Map<string, GrowthTrajectoryProfile>();
-    for (const profile of data?.growthTrajectory?.profiles ?? []) {
-      map.set(profile.anchorId, profile);
-    }
-    return map;
-  }, [data?.growthTrajectory?.profiles]);
-
-  const openAnchorPopup = (anchor: AnchorListItem) => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    popupRef.current?.remove();
-    popupRef.current = new maplibregl.Popup({
-      closeButton: false,
-      offset: 18,
-      className: "corridor-anchor-popup",
-    })
-      .setLngLat([anchor.longitude, anchor.latitude])
-      .setHTML(buildAnchorPopupHtml(anchor))
-      .addTo(map);
-  };
-
-  const focusAnchorOnMap = (anchor: AnchorListItem) => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    map.flyTo({
-      center: [anchor.longitude, anchor.latitude],
-      zoom: Math.max(map.getZoom(), 8.2),
-      speed: 0.9,
-      essential: true,
-    });
-    map.once("moveend", () => openAnchorPopup(anchor));
-  };
-
   useEffect(() => {
     popupRef.current?.remove();
     popupRef.current = null;
@@ -1198,113 +1055,6 @@ export function MapPanel({ data = null }: MapPanelProps) {
       }
     }
 
-    if (layerVisibility.points && visiblePoints.length > 0) {
-      const pointData: PointLayerDatum[] = visiblePoints.map((point) => {
-        const sector = point.sector ? normalizeAnchorSector(point.sector) : undefined;
-        const country = point.country ?? "Unknown";
-        const demandProfile = point.anchorId ? demandByAnchorId.get(point.anchorId) : undefined;
-        const bankabilityProfile = point.anchorId
-          ? bankabilityByAnchorId.get(point.anchorId)
-          : undefined;
-        const growthProfile = point.anchorId ? growthByAnchorId.get(point.anchorId) : undefined;
-        const popupLines = [
-          `<strong>${escapeHtml(point.label)}</strong>`,
-          point.detectionId ? `<strong>Detection ID</strong>: ${escapeHtml(point.detectionId)}` : null,
-          point.anchorId ? `<strong>Anchor ID</strong>: ${escapeHtml(point.anchorId)}` : null,
-          sector ? `<strong>Sector</strong>: ${escapeHtml(sector)}` : null,
-          point.subSector ? `<strong>Sub-sector</strong>: ${escapeHtml(point.subSector)}` : null,
-          point.country ? `<strong>Country</strong>: ${escapeHtml(country)}` : null,
-          point.operator ? `<strong>Operator</strong>: ${escapeHtml(point.operator)}` : null,
-          point.registrySource ? `<strong>Registry</strong>: ${escapeHtml(point.registrySource)}` : null,
-          point.identityConfidence
-            ? `<strong>Identity Confidence</strong>: ${escapeHtml(formatStatus(point.identityConfidence))}`
-            : null,
-          demandProfile ? `<strong>Current Demand</strong>: ${formatMw(demandProfile.currentMw)} MW` : null,
-          demandProfile ? `<strong>Load Factor</strong>: ${formatLoadFactor(demandProfile.loadFactor)}` : null,
-          demandProfile?.reliabilityClass
-            ? `<strong>Reliability Class</strong>: ${escapeHtml(demandProfile.reliabilityClass)}`
-            : null,
-          `<strong>Coordinates</strong>: ${formatCoordinate(point.latitude)}, ${formatCoordinate(point.longitude)}`,
-          point.confidence ? `Confidence: ${Math.round(point.confidence * 100)}%` : null,
-          bankabilityProfile
-            ? `<strong>Bankability Score</strong>: ${formatBankabilityScore(bankabilityProfile.score)}`
-            : null,
-          bankabilityProfile?.tier ? `<strong>Tier</strong>: ${escapeHtml(bankabilityProfile.tier)}` : null,
-          bankabilityProfile?.offtakeWillingness
-            ? `<strong>Offtake Willingness</strong>: ${escapeHtml(bankabilityProfile.offtakeWillingness)}`
-            : null,
-          bankabilityProfile?.financialStrength
-            ? `<strong>Financial Strength</strong>: ${escapeHtml(bankabilityProfile.financialStrength)}`
-            : null,
-          bankabilityProfile?.contractReadiness
-            ? `<strong>Contract Readiness</strong>: ${escapeHtml(bankabilityProfile.contractReadiness)}`
-            : null,
-          growthProfile?.currentMw !== undefined
-            ? `<strong>Growth Current</strong>: ${formatMw(growthProfile.currentMw)} MW`
-            : null,
-          growthProfile?.year5Mw !== undefined
-            ? `<strong>Growth Year 5</strong>: ${formatMw(growthProfile.year5Mw)} MW`
-            : null,
-          growthProfile?.year10Mw !== undefined
-            ? `<strong>Growth Year 10</strong>: ${formatMw(growthProfile.year10Mw)} MW`
-            : null,
-          growthProfile?.year20Mw !== undefined
-            ? `<strong>Growth Year 20</strong>: ${formatMw(growthProfile.year20Mw)} MW`
-            : null,
-          growthProfile?.cagr ? `<strong>CAGR</strong>: ${escapeHtml(growthProfile.cagr)}` : null,
-          growthProfile?.growthDriverType
-            ? `<strong>Growth Driver Type</strong>: ${escapeHtml(growthProfile.growthDriverType)}`
-            : null,
-          growthProfile?.confidenceBand
-            ? `<strong>Confidence Band</strong>: ${escapeHtml(growthProfile.confidenceBand)}`
-            : null,
-        ]
-          .filter((line): line is string => line !== null)
-          .join("<br/>");
-
-        boundsPoints.push([point.latitude, point.longitude]);
-        return {
-          position: [point.longitude, point.latitude] as [number, number],
-          popupHtml: popupLines,
-          icon: sector ? sectorIcons[sector] : defaultPinIcon,
-          size: 34,
-          anchorSelection: sector
-            ? {
-                name: point.label,
-                sector,
-                country,
-                latitude: point.latitude,
-                longitude: point.longitude,
-              }
-            : undefined,
-        };
-      });
-
-      layers.push(
-        new IconLayer({
-          id: "map-pins",
-          data: pointData,
-          pickable: true,
-          getPosition: (d: PointLayerDatum) => d.position,
-          getIcon: (d: PointLayerDatum) => d.icon,
-          getSize: (d: PointLayerDatum) => d.size,
-          sizeUnits: "pixels",
-          onClick: ({ object }: { object?: PointLayerDatum }) => {
-            if (!object?.anchorSelection) return;
-            const selected = object.anchorSelection;
-            focusAnchorOnMap({
-              anchorId: "",
-              name: selected.name,
-              sector: selected.sector,
-              country: selected.country,
-              latitude: selected.latitude,
-              longitude: selected.longitude,
-            });
-          },
-        })
-      );
-    }
-
     overlay.setProps({
       layers: layers as never[],
       getTooltip: ({ object }: { object?: OverlayObject }) => {
@@ -1354,8 +1104,6 @@ export function MapPanel({ data = null }: MapPanelProps) {
     filteredEconomicGaps,
     filteredOpportunities,
     filteredInfrastructureDetections,
-    filteredPoints,
-    visiblePoints,
     isMapReady,
     layerVisibility,
     opportunityCoordinatesByAnchorId,
@@ -1563,6 +1311,14 @@ export function MapPanel({ data = null }: MapPanelProps) {
       JSON.stringify(isLayerToggleMinimized)
     );
   }, [isLayerToggleMinimized]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(
+      LAYER_VISIBILITY_STORAGE_KEY,
+      JSON.stringify(layerVisibility)
+    );
+  }, [layerVisibility]);
 
   return (
     <div className="h-full w-full bg-muted/20">

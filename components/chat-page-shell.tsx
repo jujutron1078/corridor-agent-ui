@@ -47,7 +47,9 @@ export function ChatPageShell() {
   return (
     <SidebarProvider className="h-svh" style={sidebarStyle}>
       <AssistantProvider>
-        <AppSidebar variant="sidebar" />
+        <Suspense fallback={null}>
+          <AppSidebar variant="sidebar" />
+        </Suspense>
         <SidebarInset className="min-h-0 overflow-hidden">
           <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
             <Suspense fallback={null}>
