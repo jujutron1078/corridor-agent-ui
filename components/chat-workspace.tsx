@@ -17,7 +17,7 @@ type ChatWorkspaceProps = {
 
 const CHAT_SPLIT_SIZES_STORAGE_KEY = "corridor:layout:chat-split-sizes";
 const DEFAULT_CHAT_SPLIT_SIZES: [number, number] = [45, 55];
-const MIN_CHAT_PANEL_SIZE = 30;
+const MIN_CHAT_PANEL_SIZE = 15;
 const MIN_MAP_PANEL_SIZE = 25;
 const LAYOUT_STORAGE_EVENT = "corridor:layout-storage-change";
 let cachedSplitSizesRaw: string | null = null;
@@ -112,7 +112,16 @@ function isSameMapData(
       left.label !== right.label ||
       left.latitude !== right.latitude ||
       left.longitude !== right.longitude ||
-      left.confidence !== right.confidence
+      left.confidence !== right.confidence ||
+      left.anchorId !== right.anchorId ||
+      left.detectionId !== right.detectionId ||
+      left.sector !== right.sector ||
+      left.subSector !== right.subSector ||
+      left.country !== right.country ||
+      left.operator !== right.operator ||
+      left.registrySource !== right.registrySource ||
+      left.identityConfidence !== right.identityConfidence ||
+      left.resolutionNote !== right.resolutionNote
     ) {
       return false;
     }
@@ -204,6 +213,8 @@ function isSameMapData(
       left.longitude !== right.longitude ||
       left.confidence !== right.confidence ||
       left.verificationStatus !== right.verificationStatus ||
+      left.isAnchorLoad !== right.isAnchorLoad ||
+      left.isGenerationAsset !== right.isGenerationAsset ||
       left.gridInterconnectionPriority !== right.gridInterconnectionPriority ||
       left.estimatedPowerDemandMw !== right.estimatedPowerDemandMw ||
       left.estimatedGenerationCapacityMw !== right.estimatedGenerationCapacityMw ||
@@ -240,6 +251,101 @@ function isSameMapData(
       const [leftLat, leftLng] = left.route[pointIndex];
       const [rightLat, rightLng] = right.route[pointIndex];
       if (leftLat !== rightLat || leftLng !== rightLng) return false;
+    }
+  }
+
+  if (a.anchorLoadsCount !== b.anchorLoadsCount) return false;
+  if (Boolean(a.currentDemand) !== Boolean(b.currentDemand)) return false;
+  if (a.currentDemand && b.currentDemand) {
+    if (a.currentDemand.totalCurrentMw !== b.currentDemand.totalCurrentMw) return false;
+    if (a.currentDemand.demandProfiles.length !== b.currentDemand.demandProfiles.length) {
+      return false;
+    }
+    for (let index = 0; index < a.currentDemand.demandProfiles.length; index += 1) {
+      const left = a.currentDemand.demandProfiles[index];
+      const right = b.currentDemand.demandProfiles[index];
+      if (
+        left.anchorId !== right.anchorId ||
+        left.detectionId !== right.detectionId ||
+        left.name !== right.name ||
+        left.country !== right.country ||
+        left.sector !== right.sector ||
+        left.subSector !== right.subSector ||
+        left.currentMw !== right.currentMw ||
+        left.loadFactor !== right.loadFactor ||
+        left.reliabilityClass !== right.reliabilityClass ||
+        left.reliabilityRationale !== right.reliabilityRationale ||
+        left.demandBasis !== right.demandBasis
+      ) {
+        return false;
+      }
+    }
+  }
+  if (Boolean(a.bankability) !== Boolean(b.bankability)) return false;
+  if (a.bankability && b.bankability) {
+    if (
+      a.bankability.corridorAverageScore !== b.bankability.corridorAverageScore ||
+      a.bankability.anchorLoadsAssessed !== b.bankability.anchorLoadsAssessed ||
+      a.bankability.tier1Count !== b.bankability.tier1Count ||
+      a.bankability.tier2Count !== b.bankability.tier2Count ||
+      a.bankability.tier3Count !== b.bankability.tier3Count
+    ) {
+      return false;
+    }
+    if (a.bankability.profiles.length !== b.bankability.profiles.length) return false;
+    for (let index = 0; index < a.bankability.profiles.length; index += 1) {
+      const left = a.bankability.profiles[index];
+      const right = b.bankability.profiles[index];
+      if (
+        left.anchorId !== right.anchorId ||
+        left.detectionId !== right.detectionId ||
+        left.name !== right.name ||
+        left.country !== right.country ||
+        left.score !== right.score ||
+        left.tier !== right.tier ||
+        left.offtakeWillingness !== right.offtakeWillingness ||
+        left.financialStrength !== right.financialStrength ||
+        left.contractReadiness !== right.contractReadiness ||
+        left.rationale !== right.rationale ||
+        left.creditEnhancementRequired !== right.creditEnhancementRequired
+      ) {
+        return false;
+      }
+    }
+  }
+  if (Boolean(a.growthTrajectory) !== Boolean(b.growthTrajectory)) return false;
+  if (a.growthTrajectory && b.growthTrajectory) {
+    if (
+      a.growthTrajectory.projectionSummary !== b.growthTrajectory.projectionSummary ||
+      a.growthTrajectory.aggregateCurrentMw !== b.growthTrajectory.aggregateCurrentMw ||
+      a.growthTrajectory.aggregateYear5Mw !== b.growthTrajectory.aggregateYear5Mw ||
+      a.growthTrajectory.aggregateYear10Mw !== b.growthTrajectory.aggregateYear10Mw ||
+      a.growthTrajectory.aggregateYear20Mw !== b.growthTrajectory.aggregateYear20Mw ||
+      a.growthTrajectory.aggregateGrowthPct !== b.growthTrajectory.aggregateGrowthPct
+    ) {
+      return false;
+    }
+    if (a.growthTrajectory.profiles.length !== b.growthTrajectory.profiles.length) return false;
+    for (let index = 0; index < a.growthTrajectory.profiles.length; index += 1) {
+      const left = a.growthTrajectory.profiles[index];
+      const right = b.growthTrajectory.profiles[index];
+      if (
+        left.anchorId !== right.anchorId ||
+        left.detectionId !== right.detectionId ||
+        left.name !== right.name ||
+        left.country !== right.country ||
+        left.bankabilityTier !== right.bankabilityTier ||
+        left.currentMw !== right.currentMw ||
+        left.year5Mw !== right.year5Mw ||
+        left.year10Mw !== right.year10Mw ||
+        left.year20Mw !== right.year20Mw ||
+        left.cagr !== right.cagr ||
+        left.growthDriverType !== right.growthDriverType ||
+        left.growthDriver !== right.growthDriver ||
+        left.confidenceBand !== right.confidenceBand
+      ) {
+        return false;
+      }
     }
   }
 
