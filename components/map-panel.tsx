@@ -1568,7 +1568,7 @@ export function MapPanel({ data = null }: MapPanelProps) {
     <div className="h-full w-full bg-muted/20">
       <div
         ref={panelFrameRef}
-        className="relative h-full w-full overflow-hidden border border-border bg-background shadow-sm"
+        className="relative h-full w-full overflow-hidden bg-background shadow-sm"
       >
         <div ref={mapContainerRef} className="h-full w-full" />
         {!isMapReady && (

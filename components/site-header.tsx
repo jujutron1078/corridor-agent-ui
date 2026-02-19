@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ASSISTANTS, useAssistant } from "@/lib/assistant-context";
-import { ChevronDown, Map } from "lucide-react";
+import { ChevronDown, PanelRightOpen } from "lucide-react";
 
 type SiteHeaderProps = {
   onMapClick?: () => void;
@@ -60,10 +60,10 @@ export function SiteHeader({ onMapClick }: SiteHeaderProps) {
             size="sm"
             className="hidden sm:flex"
             onClick={onMapClick}
-            aria-label="Open map view"
-            title="Open map view"
+            aria-label="Toggle canvas view"
+            title="Toggle canvas view"
           >
-            <Map className="size-4" />
+            <PanelRightOpen className="size-4" />
           </Button>
         </div>
       </div>

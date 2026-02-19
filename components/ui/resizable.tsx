@@ -223,11 +223,19 @@ export function ResizableHandle({
       aria-orientation={orientation}
       onPointerDown={onResizeStart}
       className={cn(
-        "relative z-[1200] shrink-0 bg-border",
+        "relative z-[1200] shrink-0 bg-transparent",
         orientation === "horizontal" ? "h-full w-px cursor-col-resize" : "h-px w-full cursor-row-resize",
         className
       )}
     >
+      <div
+        className={cn(
+          "pointer-events-none absolute bg-border/60",
+          orientation === "horizontal"
+            ? "top-0 left-1/2 h-full w-px -translate-x-1/2"
+            : "top-1/2 left-0 h-px w-full -translate-y-1/2"
+        )}
+      />
       {withHandle && (
         <div
           className={cn(

@@ -218,7 +218,7 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
 
       <div
         className={`supports-[backdrop-filter]:bg-background/80 z-10 bg-background/95 pt-2 backdrop-blur ${
-          withBottomSpacing ? "pb-4" : ""
+          withBottomSpacing ? "pb-1" : ""
         }`}
       >
         {stream.error !== undefined && stream.error !== null && (

@@ -2,8 +2,9 @@
 
 import * as React from "react"
 import { Client } from "@langchain/langgraph-sdk"
+import Image from "next/image"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { IconFolder, IconInnerShadowTop } from "@tabler/icons-react"
+import { IconFolder } from "@tabler/icons-react"
 
 import {
   getProjectsAction,
@@ -298,7 +299,13 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               className="data-[slot=sidebar-menu-button]:!p-1.5"
             >
               <a href="#">
-                <IconInnerShadowTop className="!size-5" />
+                <Image
+                  src="/corridor-favicon.svg"
+                  alt="Corridor Agent"
+                  width={20}
+                  height={20}
+                  className="shrink-0"
+                />
                 <span className="text-base font-semibold">Corridor Agents</span>
               </a>
             </SidebarMenuButton>
