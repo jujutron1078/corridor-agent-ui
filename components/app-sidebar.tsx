@@ -28,6 +28,12 @@ import {
 } from "@/components/ui/sidebar"
 
 const LANGGRAPH_API_URL = "http://127.0.0.1:2024"
+const THREADS_UPDATED_EVENT = "corridor:threads-updated"
+type ThreadsUpdatedEventDetail = {
+  projectId: string
+  projectName: string
+  threadId: string
+}
 
 const data = {
   user: {
@@ -88,6 +94,41 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
   React.useEffect(() => {
     void loadProjects()
+  }, [loadProjects])
+
+  React.useEffect(() => {
+    const handleThreadsUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<ThreadsUpdatedEventDetail>).detail
+      if (!detail?.projectId || !detail?.projectName || !detail?.threadId) {
+        void loadProjects()
+        return
+      }
+
+      setProjectsData((previous) =>
+        previous.map((project) => {
+          if (project.projectId !== detail.projectId) return project
+          const hasThread = project.threads.some((thread) => thread.threadId === detail.threadId)
+          if (hasThread) return project
+
+          return {
+            ...project,
+            threads: [
+              ...project.threads,
+              {
+                threadId: detail.threadId,
+                name: detail.threadId,
+                url: `/?project_id=${encodeURIComponent(detail.projectId)}&project_name=${encodeURIComponent(detail.projectName)}&thread=${encodeURIComponent(detail.threadId)}`,
+              },
+            ],
+          }
+        })
+      )
+    }
+
+    window.addEventListener(THREADS_UPDATED_EVENT, handleThreadsUpdated)
+    return () => {
+      window.removeEventListener(THREADS_UPDATED_EVENT, handleThreadsUpdated)
+    }
   }, [loadProjects])
 
   const handleDeleteThread = React.useCallback(

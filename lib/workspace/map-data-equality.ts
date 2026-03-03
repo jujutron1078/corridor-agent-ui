@@ -1,5 +1,24 @@
 import type { MapOverlayData } from "@/lib/map-overlay";
 
+function isSameAttributeRecord(
+  left: Record<string, string | number | boolean> | undefined,
+  right: Record<string, string | number | boolean> | undefined
+): boolean {
+  if (!left && !right) return true;
+  if (!left || !right) return false;
+
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length) return false;
+
+  for (let index = 0; index < leftKeys.length; index += 1) {
+    if (leftKeys[index] !== rightKeys[index]) return false;
+    if (left[leftKeys[index]] !== right[rightKeys[index]]) return false;
+  }
+
+  return true;
+}
+
 export function isSameMapData(a: MapOverlayData | null, b: MapOverlayData | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -115,8 +134,17 @@ export function isSameMapData(a: MapOverlayData | null, b: MapOverlayData | null
       left.longitude !== right.longitude ||
       left.confidence !== right.confidence ||
       left.verificationStatus !== right.verificationStatus ||
+      left.matchedKnownAsset !== right.matchedKnownAsset ||
       left.isAnchorLoad !== right.isAnchorLoad ||
       left.isGenerationAsset !== right.isGenerationAsset ||
+      left.isRoadSafetyRisk !== right.isRoadSafetyRisk ||
+      left.riskSeverity !== right.riskSeverity ||
+      left.reviewReason !== right.reviewReason ||
+      left.changeNote !== right.changeNote ||
+      left.isNewSinceLastCensus !== right.isNewSinceLastCensus ||
+      left.constructionActivityDetected !== right.constructionActivityDetected ||
+      left.lastCensusDate !== right.lastCensusDate ||
+      !isSameAttributeRecord(left.facilityAttributes, right.facilityAttributes) ||
       left.gridInterconnectionPriority !== right.gridInterconnectionPriority ||
       left.estimatedPowerDemandMw !== right.estimatedPowerDemandMw ||
       left.estimatedGenerationCapacityMw !== right.estimatedGenerationCapacityMw ||

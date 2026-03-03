@@ -10,6 +10,14 @@ import {
   buildGeneratedArtifacts,
   EXAMPLE_CANVAS_DOCUMENTS,
 } from "@/lib/workspace/canvas-documents";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 const CANVAS_RIGHT_PANEL_TAB_STORAGE_KEY = "corridor:canvas:right-panel-tab";
 const CANVAS_ACTIVE_DOCUMENT_STORAGE_KEY = "corridor:canvas:active-document-id";
@@ -150,21 +158,51 @@ export function RightCanvasPanel({ mapData }: RightCanvasPanelProps) {
             {activeDocument ? (
               <div className="flex h-full min-h-0 flex-col">
                 <p className="py-2 text-xs font-medium text-muted-foreground">{activeDocument.title}</p>
-                <textarea
-                  value={activeDocumentContent}
-                  onChange={(event) => {
-                    if (!activeDocumentId) return;
-                    setDocumentDrafts((previous) => ({
-                      ...previous,
-                      [activeDocumentId]: event.target.value,
-                    }));
-                  }}
-                  className={`min-h-0 flex-1 resize-none bg-transparent outline-none ${
-                    activeDocument.isJson
-                      ? "font-mono text-xs leading-5 text-foreground/85"
-                      : "text-sm leading-6 text-foreground/90"
-                  }`}
-                />
+                {activeDocument.table ? (
+                  <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-4">
+                    {activeDocumentContent ? (
+                      <div className="rounded-md border bg-background p-3 text-sm leading-6 whitespace-pre-wrap text-foreground/90">
+                        {activeDocumentContent}
+                      </div>
+                    ) : null}
+
+                    <Table className="rounded-md border bg-background">
+                      <TableHeader>
+                        <TableRow>
+                          {activeDocument.table.columns.map((column) => (
+                            <TableHead key={column}>{column}</TableHead>
+                          ))}
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {activeDocument.table.rows.map((row, rowIndex) => (
+                          <TableRow key={`${row[0] ?? "row"}-${rowIndex}`}>
+                            {row.map((cell, cellIndex) => (
+                              <TableCell key={`${cellIndex}-${cell}`}>{cell}</TableCell>
+                            ))}
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+
+                  </div>
+                ) : (
+                  <textarea
+                    value={activeDocumentContent}
+                    onChange={(event) => {
+                      if (!activeDocumentId) return;
+                      setDocumentDrafts((previous) => ({
+                        ...previous,
+                        [activeDocumentId]: event.target.value,
+                      }));
+                    }}
+                    className={`min-h-0 flex-1 resize-none bg-transparent outline-none ${
+                      activeDocument.isJson
+                        ? "font-mono text-xs leading-5 text-foreground/85"
+                        : "text-sm leading-6 text-foreground/90"
+                    }`}
+                  />
+                )}
               </div>
             ) : (
               <div className="rounded-lg border border-dashed border-border bg-background/80 p-4 text-sm text-muted-foreground">

@@ -5,10 +5,12 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useStream } from "@langchain/langgraph-sdk/react";
 import type { Message } from "@langchain/langgraph-sdk";
 import type { ToolCallWithResult } from "@langchain/langgraph-sdk/react";
+import { ArrowDown } from "lucide-react";
 
 import { ChatComposer } from "@/components/chat-composer";
 import { ChatEmptyState } from "@/components/chat-empty-state";
 import { ChatMessageList } from "@/components/chat-message-list";
+import { Button } from "@/components/ui/button";
 import { useAssistant } from "@/lib/assistant-context";
 import type { MapOverlayData } from "@/lib/map-overlay";
 import { extractMapOverlayData, extractMapOverlayDataFromToolCalls } from "@/lib/map-overlay";
@@ -47,6 +49,7 @@ const SCROLL_AT_BOTTOM_THRESHOLD_PX = 80;
 export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPanelProps) {
   const { assistantId } = useAssistant();
   const [input, setInput] = useState("");
+  const [isAtBottom, setIsAtBottom] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const userJustSentRef = useRef(false);
@@ -86,8 +89,15 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
     [stream]
   );
 
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
+  }, []);
+
+  const updateAtBottomState = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setIsAtBottom(distanceFromBottom <= SCROLL_AT_BOTTOM_THRESHOLD_PX);
   }, []);
 
   const lastMessageContentLength = useMemo(() => {
@@ -98,12 +108,18 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    const shouldFollow = userJustSentRef.current || (el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_AT_BOTTOM_THRESHOLD_PX);
+    const sentNow = userJustSentRef.current;
+    const shouldFollow = sentNow || isAtBottom;
     if (shouldFollow) {
       userJustSentRef.current = false;
-      scrollToBottom();
+      scrollToBottom(sentNow ? "smooth" : "auto");
     }
-  }, [messages.length, isLoading, lastMessageContentLength, scrollToBottom]);
+    updateAtBottomState();
+  }, [messages.length, isLoading, lastMessageContentLength, isAtBottom, scrollToBottom, updateAtBottomState]);
+
+  useEffect(() => {
+    updateAtBottomState();
+  }, [updateAtBottomState]);
 
   useEffect(() => {
     if (!onMapDataChange) return;
@@ -204,17 +220,30 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
 
   return (
     <div
-      className="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-1 flex-col"
+      className="relative mx-auto flex h-full min-h-0 w-full max-w-2xl flex-1 flex-col"
       role="region"
       aria-label="Chat"
     >
       <div
         ref={scrollContainerRef}
-        className="min-h-0 flex-1 overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+        onScroll={updateAtBottomState}
+        className="min-h-0 flex-1 overflow-y-auto pb-6 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
       >
         <ChatMessageList messages={messages} isLoading={isLoading} getToolCalls={getToolCalls} />
         <div ref={messagesEndRef} />
       </div>
+
+      {!isAtBottom && (
+        <Button
+          type="button"
+          size="icon"
+          onClick={() => scrollToBottom("smooth")}
+          className="absolute bottom-32 left-1/2 z-20 -translate-x-1/2 rounded-full bg-white text-black shadow-md hover:bg-white/90"
+          aria-label="Scroll to latest message"
+        >
+          <ArrowDown className="size-4" />
+        </Button>
+      )}
 
       <div
         className={`supports-[backdrop-filter]:bg-background/80 z-10 bg-background/95 pt-2 backdrop-blur ${

@@ -4,10 +4,15 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 
 import { GeoJsonLayer, IconLayer, PathLayer, PolygonLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { Maximize2, Minimize2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Maximize2, Minimize2 } from "lucide-react";
 import maplibregl, { Map as MapLibreMap, Popup as MapLibrePopup } from "maplibre-gl";
 import type { Feature, FeatureCollection, Polygon } from "geojson";
 
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import type {
   MapOverlayData,
   NoGoZone,
@@ -26,9 +31,16 @@ type LayerVisibility = {
 
 type OverlayObject = {
   popupHtml?: string;
+  hoverHtml?: string;
+  position?: [number, number];
   properties?: {
     popupHtml?: string;
+    hoverHtml?: string;
   };
+};
+
+type OverlayPicker = {
+  pickObject: (options: { x: number; y: number; radius?: number }) => { object?: OverlayObject } | null;
 };
 
 type SectorKey = "Energy" | "Mining" | "Agriculture" | "Industrial/Ports" | "Digital";
@@ -39,7 +51,10 @@ type InfrastructurePointDatum = {
   size: number;
 };
 type InfrastructureCategoryFilter = {
-  value: "all" | "anchor_load" | "generation";
+  value: "all" | "anchor_load" | "generation" | "road_safety";
+};
+type ConstraintCategoryFilter = {
+  value: "all" | "environmental" | "human_safety";
 };
 type GapFilter = {
   type: "all" | "Transmission Gap" | "Suppressed Demand Gap" | "Catalytic Gap";
@@ -51,6 +66,8 @@ type OpportunityFilter = {
   phase: "all" | "Phase 1" | "Phase 2" | "Phase 3";
   topN: 5 | 10 | 15 | 24;
 };
+type FilterSectionKey = "infrastructure" | "environment" | "economicGaps" | "opportunities";
+type FilterSectionOpenState = Record<FilterSectionKey, boolean>;
 
 const DEFAULT_CENTER: [number, number] = [6.0, -0.3];
 const DEFAULT_ZOOM = 5;
@@ -82,6 +99,12 @@ const LAYER_TOGGLE_OPTIONS: { key: keyof LayerVisibility; label: string }[] = [
 ];
 
 const FILTER_PANEL_PADDING = 12;
+const DEFAULT_FILTER_SECTION_OPEN: FilterSectionOpenState = {
+  infrastructure: true,
+  environment: true,
+  economicGaps: true,
+  opportunities: true,
+};
 
 function createPinIconUrl(hexColor: string) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
@@ -236,11 +259,220 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value);
 }
 
+function formatLabelFromKey(value: string): string {
+  return value
+    .replaceAll("_", " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatAttributeValue(value: string | number | boolean): string {
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return new Intl.NumberFormat().format(value);
+  return value;
+}
+
+function getInfrastructureDetailTitle(type: string): string {
+  const normalized = type.toLowerCase();
+  if (normalized.includes("road_safety")) return "Hazard Details";
+  if (normalized.includes("port")) return "Port Details";
+  if (normalized.includes("power") || normalized.includes("hydro") || normalized.includes("solar")) {
+    return "Generation Details";
+  }
+  if (normalized.includes("substation")) return "Grid Details";
+  if (normalized.includes("data_center")) return "Digital Infrastructure Details";
+  if (normalized.includes("industrial") || normalized.includes("special_economic_zone")) {
+    return "Industrial Details";
+  }
+  if (normalized.includes("mining")) return "Mining Details";
+  if (normalized.includes("refinery")) return "Refinery Details";
+  return "Facility Details";
+}
+
+function getPreferredAttributeOrder(type: string): string[] {
+  const normalized = type.toLowerCase();
+
+  if (normalized.includes("road_safety")) {
+    return [
+      "proximity_to_carriageway_m",
+      "pedestrian_crossing_infrastructure_detected",
+      "traffic_light_infrastructure_detected",
+      "median_barrier_detected",
+      "warning_signage_detected",
+      "visible_speed_reduction_signage",
+      "street_lighting_detected",
+      "lighting_detected",
+      "sight_distance_obstruction_detected",
+      "curve_radius_estimated_m",
+      "junction_arm_count",
+      "estimated_queue_length_m",
+      "estimated_queued_vehicles",
+      "lane_reduction_detected",
+      "lanes_reduced_from",
+      "lanes_reduced_to",
+      "construction_equipment_count",
+      "encroachment_on_carriageway_detected",
+      "encroachment_width_estimated_m",
+      "vendor_activity_in_roadway_detected",
+    ];
+  }
+
+  if (normalized.includes("port")) {
+    return [
+      "visible_berths",
+      "cranes_detected",
+      "container_stacks_detected",
+      "estimated_footprint_sqm",
+      "on_site_substation_detected",
+      "internal_road_network_km",
+    ];
+  }
+
+  if (normalized.includes("thermal_power_plant")) {
+    return [
+      "visible_cooling_towers",
+      "visible_stack_count",
+      "transmission_lines_egressing",
+      "on_site_substation_detected",
+      "estimated_footprint_sqm",
+    ];
+  }
+
+  if (normalized.includes("hydroelectric")) {
+    return [
+      "visible_turbine_bays",
+      "dam_wall_visible",
+      "reservoir_surface_sqkm",
+      "transmission_lines_egressing",
+      "on_site_substation_detected",
+      "estimated_footprint_sqm",
+    ];
+  }
+
+  if (normalized.includes("solar_farm")) {
+    return [
+      "panel_rows_visible",
+      "inverter_stations_detected",
+      "transmission_lines_egressing",
+      "on_site_substation_detected",
+      "estimated_footprint_sqm",
+    ];
+  }
+
+  if (normalized.includes("substation")) {
+    return [
+      "transformer_bays_detected",
+      "transmission_lines_egressing",
+      "on_site_substation_detected",
+      "estimated_footprint_sqm",
+    ];
+  }
+
+  if (normalized.includes("data_center")) {
+    return [
+      "cooling_units_on_roof_detected",
+      "backup_generator_pads_detected",
+      "fiber_entry_points_detected",
+      "security_perimeter_detected",
+      "on_site_substation_detected",
+      "estimated_footprint_sqm",
+    ];
+  }
+
+  if (normalized.includes("refinery")) {
+    return [
+      "visible_storage_tanks",
+      "visible_processing_units",
+      "flaring_detected",
+      "transmission_lines_egressing",
+      "on_site_substation_detected",
+      "estimated_footprint_sqm",
+    ];
+  }
+
+  if (normalized.includes("mining")) {
+    return [
+      "processing_plant_detected",
+      "headframes_visible",
+      "open_pit_area_sqm",
+      "tailings_pond_detected",
+      "distance_to_corridor_km",
+      "on_site_substation_detected",
+      "estimated_footprint_sqm",
+    ];
+  }
+
+  if (normalized.includes("special_economic_zone")) {
+    return [
+      "estimated_built_up_pct",
+      "warehouse_clusters_detected",
+      "active_construction_zones",
+      "internal_road_network_km",
+      "on_site_substation_detected",
+      "estimated_footprint_sqm",
+    ];
+  }
+
+  if (normalized.includes("industrial")) {
+    return [
+      "factory_structures_detected",
+      "warehouse_clusters_detected",
+      "processing_silos_detected",
+      "loading_bays_detected",
+      "storage_silos_detected",
+      "diesel_generator_pads_detected",
+      "on_site_substation_detected",
+      "estimated_footprint_sqm",
+    ];
+  }
+
+  return [];
+}
+
+function buildOrderedAttributeLines(
+  type: string,
+  attributes: Record<string, string | number | boolean> | undefined
+): string[] {
+  const attrs = attributes ?? {};
+  const preferredOrder = getPreferredAttributeOrder(type);
+  const lines: string[] = [];
+  const seen = new Set<string>();
+
+  for (const key of preferredOrder) {
+    if (!(key in attrs)) continue;
+    seen.add(key);
+    lines.push(
+      `<strong>${escapeHtml(formatLabelFromKey(key))}</strong>: ${escapeHtml(
+        formatAttributeValue(attrs[key]).toString()
+      )}`
+    );
+  }
+
+  const remainingKeys = Object.keys(attrs)
+    .filter((key) => !seen.has(key))
+    .sort((left, right) => left.localeCompare(right));
+
+  for (const key of remainingKeys) {
+    lines.push(
+      `<strong>${escapeHtml(formatLabelFromKey(key))}</strong>: ${escapeHtml(
+        formatAttributeValue(attrs[key]).toString()
+      )}`
+    );
+  }
+
+  return lines;
+}
+
 function getInfrastructureStyle(type: string): {
   color: string;
   typeLabel: string;
 } {
   const normalized = type.toLowerCase();
+
+  if (normalized.includes("road_safety")) {
+    return { color: "#dc2626", typeLabel: "Road Safety Hazard" };
+  }
 
   if (
     normalized.includes("power_plant") ||
@@ -283,7 +515,9 @@ function getConstraintStyle(zone: NoGoZone): {
   opacity: number;
   label: string;
 } {
+  const category = (zone.category ?? "").toLowerCase();
   const normalized = `${zone.severity ?? ""} ${zone.reason ?? ""} ${zone.description}`.toLowerCase();
+  const isSafety = category.includes("safety");
 
   if (
     normalized.includes("absolute") ||
@@ -292,27 +526,27 @@ function getConstraintStyle(zone: NoGoZone): {
     normalized.includes("critical")
   ) {
     return {
-      stroke: "#7f1d1d",
-      fill: "#dc2626",
+      stroke: isSafety ? "#1e3a8a" : "#7f1d1d",
+      fill: isSafety ? "#2563eb" : "#dc2626",
       opacity: 0.35,
-      label: "Absolute no-go",
+      label: isSafety ? "Critical human safety" : "Absolute no-go",
     };
   }
 
   if (normalized.includes("high") || normalized.includes("hard no-go")) {
     return {
-      stroke: "#9a3412",
-      fill: "#f97316",
+      stroke: isSafety ? "#1e40af" : "#9a3412",
+      fill: isSafety ? "#3b82f6" : "#f97316",
       opacity: 0.25,
-      label: "High risk",
+      label: isSafety ? "High human safety risk" : "High risk",
     };
   }
 
   return {
-    stroke: "#a16207",
-    fill: "#facc15",
+    stroke: isSafety ? "#1d4ed8" : "#a16207",
+    fill: isSafety ? "#60a5fa" : "#facc15",
     opacity: 0.2,
-    label: "Medium risk",
+    label: isSafety ? "Human safety mitigation" : "Medium risk",
   };
 }
 
@@ -342,6 +576,15 @@ function getRouteVariantStyle(rank: number): {
     default:
       return { color: "#dc2626", width: 2, label: `ROUTE-V${rank} lower ranked` };
   }
+}
+
+function getRiskSeverityColor(severity: string | undefined): string {
+  const normalized = (severity ?? "").toLowerCase();
+  if (normalized.includes("critical")) return "#7f1d1d";
+  if (normalized.includes("high")) return "#b91c1c";
+  if (normalized.includes("medium")) return "#ea580c";
+  if (normalized.includes("low")) return "#ca8a04";
+  return "#374151";
 }
 
 function getGapTypeColor(gapType: string): [number, number, number, number] {
@@ -385,7 +628,40 @@ function getOpportunityRadius(score: number | undefined): number {
   return 8 + (safe / 100) * 18;
 }
 
-function buildRouteTooltipHtml(variant: RouteVariant, isRecommended: boolean): string {
+function getPopupHtmlFromObject(object: OverlayObject | undefined): string | null {
+  return object?.popupHtml ?? object?.properties?.popupHtml ?? null;
+}
+
+function getHoverHtmlFromObject(object: OverlayObject | undefined): string | null {
+  return object?.hoverHtml ?? object?.properties?.hoverHtml ?? getPopupHtmlFromObject(object);
+}
+
+function buildRouteTooltipHtml(
+  variant: RouteVariant,
+  isRecommended: boolean,
+  detail: "compact" | "full" = "full"
+): string {
+  if (detail === "compact") {
+    return [
+      `<strong>${escapeHtml(variant.label)}</strong>`,
+      isRecommended ? "<strong>Recommended Route</strong>" : null,
+      variant.rank !== undefined ? `<strong>Rank</strong>: ${variant.rank}` : null,
+      variant.distanceKm !== undefined
+        ? `<strong>Distance</strong>: ${formatNumber(variant.distanceKm)} km`
+        : null,
+      variant.estimatedCostUsd !== undefined
+        ? `<strong>Net CAPEX</strong>: $${formatNumber(variant.estimatedCostUsd)}`
+        : null,
+      (variant.roadSafetyScore ?? variant.scoringBreakdown?.roadSafetyScore) !== undefined
+        ? `<strong>Road Safety Score</strong>: ${
+            variant.roadSafetyScore ?? variant.scoringBreakdown?.roadSafetyScore
+          }`
+        : null,
+    ]
+      .filter((line): line is string => line !== null)
+      .join("<br/>");
+  }
+
   const breakdown = variant.scoringBreakdown;
   return [
     `<strong>${escapeHtml(variant.label)}</strong>`,
@@ -432,6 +708,38 @@ function buildRouteTooltipHtml(variant: RouteVariant, isRecommended: boolean): s
       : null,
     breakdown?.anchorLoadCoverage !== undefined
       ? `<strong>Anchor Coverage Score</strong>: ${breakdown.anchorLoadCoverage}`
+      : null,
+    (variant.roadSafetyScore ?? breakdown?.roadSafetyScore) !== undefined
+      ? `<strong>Road Safety Score</strong>: ${variant.roadSafetyScore ?? breakdown?.roadSafetyScore}`
+      : null,
+    variant.totalSafetyMitigationCapexUsd !== undefined
+      ? `<strong>Safety Mitigation CAPEX</strong>: $${formatNumber(variant.totalSafetyMitigationCapexUsd)}`
+      : null,
+    variant.combinedNetCapexIncludingSafetyUsd !== undefined
+      ? `<strong>Net CAPEX + Safety</strong>: $${formatNumber(variant.combinedNetCapexIncludingSafetyUsd)}`
+      : null,
+    variant.safetyCapexAsPctOfNetCapex !== undefined
+      ? `<strong>Safety CAPEX % of Net</strong>: ${variant.safetyCapexAsPctOfNetCapex}%`
+      : null,
+    variant.safetyConflictsFullyMitigated !== undefined
+      ? `<strong>Safety Conflicts Fully Mitigated</strong>: ${variant.safetyConflictsFullyMitigated}`
+      : null,
+    variant.safetyConflictsPartiallyMitigated !== undefined
+      ? `<strong>Safety Conflicts Partially Mitigated</strong>: ${variant.safetyConflictsPartiallyMitigated}`
+      : null,
+    variant.safetyConflictsAvoidedByRouting !== undefined
+      ? `<strong>Safety Conflicts Avoided By Routing</strong>: ${variant.safetyConflictsAvoidedByRouting}`
+      : null,
+    variant.ess4PriorActionsAddressed !== undefined
+      ? `<strong>ESS4 Prior Actions Addressed</strong>: ${variant.ess4PriorActionsAddressed}`
+      : null,
+    variant.esgComplianceRating
+      ? `<strong>ESG Compliance</strong>: ${escapeHtml(variant.esgComplianceRating)}`
+      : null,
+    (variant.roadSafetyScoreRationale ?? breakdown?.roadSafetyScoreRationale)
+      ? `<strong>Road Safety Rationale</strong>: ${escapeHtml(
+          variant.roadSafetyScoreRationale ?? breakdown?.roadSafetyScoreRationale ?? ""
+        )}`
       : null,
     variant.equityIrrPct !== undefined ? `<strong>Equity IRR</strong>: ${variant.equityIrrPct}%` : null,
     variant.projectIrrPct !== undefined ? `<strong>Project IRR</strong>: ${variant.projectIrrPct}%` : null,
@@ -510,6 +818,9 @@ export function MapPanel({ data = null }: MapPanelProps) {
   const [infrastructureFilter, setInfrastructureFilter] = useState<InfrastructureCategoryFilter>({
     value: "all",
   });
+  const [constraintFilter, setConstraintFilter] = useState<ConstraintCategoryFilter>({
+    value: "all",
+  });
   const [gapFilter, setGapFilter] = useState<GapFilter>({
     type: "all",
     severity: "all",
@@ -520,17 +831,27 @@ export function MapPanel({ data = null }: MapPanelProps) {
     phase: "all",
     topN: 10,
   });
+  const [filterSectionOpen, setFilterSectionOpen] = useState<FilterSectionOpenState>(
+    DEFAULT_FILTER_SECTION_OPEN
+  );
   const filteredInfrastructureDetections = useMemo(() => {
     const detections = data?.infrastructureDetections ?? [];
     if (infrastructureFilter.value === "all") return detections;
-    return detections.filter(
-      (detection) =>
-        (infrastructureFilter.value === "anchor_load" &&
-          (detection.isAnchorLoad === true ||
-            (detection.isGenerationAsset !== true && !isGenerationText(detection.type)))) ||
-        (infrastructureFilter.value === "generation" &&
-          (detection.isGenerationAsset === true || isGenerationText(detection.type)))
-    );
+    return detections.filter((detection) => {
+      if (infrastructureFilter.value === "anchor_load") {
+        return detection.isAnchorLoad === true;
+      }
+      if (infrastructureFilter.value === "generation") {
+        return detection.isGenerationAsset === true || isGenerationText(detection.type);
+      }
+      if (infrastructureFilter.value === "road_safety") {
+        return (
+          detection.isRoadSafetyRisk === true ||
+          detection.type.toLowerCase().includes("road_safety")
+        );
+      }
+      return true;
+    });
   }, [data?.infrastructureDetections, infrastructureFilter]);
   const filteredEconomicGaps = useMemo(() => {
     const gaps = data?.economicGaps ?? [];
@@ -542,6 +863,15 @@ export function MapPanel({ data = null }: MapPanelProps) {
       return matchesType && matchesSeverity && matchesPhase && matchesBorder;
     });
   }, [data?.economicGaps, gapFilter]);
+  const filteredNoGoZones = useMemo(() => {
+    const zones = data?.noGoZones ?? [];
+    if (constraintFilter.value === "all") return zones;
+    return zones.filter((zone) => {
+      const normalized = (zone.category ?? "environmental").toLowerCase();
+      if (constraintFilter.value === "human_safety") return normalized.includes("safety");
+      return normalized.includes("environmental");
+    });
+  }, [data?.noGoZones, constraintFilter]);
   const opportunityCoordinatesByAnchorId = useMemo(() => {
     const coordinates = new Map<string, { latitude: number; longitude: number }>();
     for (const point of data?.points ?? []) {
@@ -664,7 +994,12 @@ export function MapPanel({ data = null }: MapPanelProps) {
     }
 
     if (layerVisibility.environmental) {
-      const features = (data.noGoZones ?? [])
+      const safetyCenterPoints: {
+        position: [number, number];
+        popupHtml: string;
+        fillColor: [number, number, number, number];
+      }[] = [];
+      const features = filteredNoGoZones
         .map((zone) => {
           const style = getConstraintStyle(zone);
           const polygon =
@@ -678,12 +1013,25 @@ export function MapPanel({ data = null }: MapPanelProps) {
           boundsPoints.push(...polygon);
           const popupHtml = [
             zone.zoneId ? `<strong>Zone ID</strong>: ${escapeHtml(zone.zoneId)}` : null,
+            zone.category ? `<strong>Category</strong>: ${escapeHtml(zone.category.replaceAll("_", " "))}` : null,
             `<strong>${escapeHtml(style.label)}</strong>: ${escapeHtml(zone.description)}`,
             zone.radiusKm !== undefined ? `<strong>Radius</strong>: ${zone.radiusKm} km` : null,
             zone.reason ? `<strong>Reason</strong>: ${escapeHtml(zone.reason)}` : null,
           ]
             .filter((line): line is string => line !== null)
             .join("<br/>");
+
+          if (
+            (zone.category ?? "").toLowerCase().includes("safety") &&
+            zone.latitude !== undefined &&
+            zone.longitude !== undefined
+          ) {
+            safetyCenterPoints.push({
+              position: [zone.longitude, zone.latitude],
+              popupHtml,
+              fillColor: hexToRgba(style.fill, 235),
+            });
+          }
 
           return {
             type: "Feature",
@@ -713,6 +1061,28 @@ export function MapPanel({ data = null }: MapPanelProps) {
             getFillColor: (feature: { properties?: { fillColor?: [number, number, number, number] } }) =>
               feature.properties?.fillColor ?? [250, 204, 21, 50],
             lineWidthMinPixels: 1.5,
+          })
+        );
+      }
+
+      if (safetyCenterPoints.length > 0) {
+        layers.push(
+          new ScatterplotLayer({
+            id: "human-safety-zone-centers",
+            data: safetyCenterPoints,
+            pickable: true,
+            filled: true,
+            stroked: true,
+            getPosition: (point: { position: [number, number] }) => point.position,
+            getRadius: 700,
+            radiusMinPixels: 5,
+            radiusMaxPixels: 14,
+            getFillColor: (point: { fillColor: [number, number, number, number] }) =>
+              point.fillColor,
+            getLineColor: [255, 255, 255, 230],
+            lineWidthMinPixels: 1,
+            getTooltip: (point: { popupHtml?: string }) =>
+              point.popupHtml ? { html: point.popupHtml } : null,
           })
         );
       }
@@ -782,7 +1152,8 @@ export function MapPanel({ data = null }: MapPanelProps) {
           path: variant.route.map(([lat, lng]) => [lng, lat] as [number, number]),
           color: hexToRgba(style.color, 225),
           width: style.width,
-          popupHtml: buildRouteTooltipHtml(variant, false),
+          hoverHtml: buildRouteTooltipHtml(variant, false, "compact"),
+          popupHtml: buildRouteTooltipHtml(variant, false, "full"),
         };
       });
 
@@ -820,7 +1191,13 @@ export function MapPanel({ data = null }: MapPanelProps) {
       layers.push(
         new PathLayer({
           id: "route-recommended",
-          data: [{ path, popupHtml: buildRouteTooltipHtml(recommendedVariant, true) }],
+          data: [
+            {
+              path,
+              hoverHtml: buildRouteTooltipHtml(recommendedVariant, true, "compact"),
+              popupHtml: buildRouteTooltipHtml(recommendedVariant, true, "full"),
+            },
+          ],
           pickable: true,
           getPath: (d: { path: [number, number][] }) => d.path,
           getColor: hexToRgba(style.color, 245),
@@ -974,7 +1351,42 @@ export function MapPanel({ data = null }: MapPanelProps) {
         const style = getInfrastructureStyle(detection.type);
         const status = (detection.verificationStatus ?? "").toLowerCase();
         const isManual = status.includes("manual");
-        const fillColor = hexToRgba(style.color, isManual ? 150 : 235);
+        const pinColor =
+          detection.isRoadSafetyRisk === true
+            ? getRiskSeverityColor(detection.riskSeverity)
+            : style.color;
+        const fillColor = hexToRgba(pinColor, isManual ? 150 : 235);
+        const facilityAttributeLines = buildOrderedAttributeLines(
+          detection.type,
+          detection.facilityAttributes
+        );
+        const detailTitle = getInfrastructureDetailTitle(detection.type);
+        const detailLines = [
+          detection.matchedKnownAsset !== undefined
+            ? `<strong>Matched Known Asset</strong>: ${detection.matchedKnownAsset ? "Yes" : "No"}`
+            : null,
+          detection.riskSeverity
+            ? `<strong>Risk Severity</strong>: ${escapeHtml(detection.riskSeverity)}`
+            : null,
+          detection.lastCensusDate
+            ? `<strong>Last Census Date</strong>: ${escapeHtml(detection.lastCensusDate)}`
+            : null,
+          detection.isNewSinceLastCensus !== undefined
+            ? `<strong>New Since Last Census</strong>: ${detection.isNewSinceLastCensus ? "Yes" : "No"}`
+            : null,
+          detection.constructionActivityDetected !== undefined
+            ? `<strong>Construction Activity</strong>: ${
+                detection.constructionActivityDetected ? "Detected" : "Not detected"
+              }`
+            : null,
+          detection.changeNote
+            ? `<strong>Change Note</strong>: ${escapeHtml(detection.changeNote)}`
+            : null,
+          detection.reviewReason
+            ? `<strong>Review Reason</strong>: ${escapeHtml(detection.reviewReason)}`
+            : null,
+          ...facilityAttributeLines,
+        ].filter((line): line is string => line !== null);
 
         const popupHtml = [
           `<strong>${escapeHtml(detection.label)}</strong>`,
@@ -991,11 +1403,17 @@ export function MapPanel({ data = null }: MapPanelProps) {
           detection.isGenerationAsset !== undefined
             ? `<strong>Generation Asset</strong>: ${detection.isGenerationAsset ? "Yes" : "No"}`
             : null,
+          detection.isRoadSafetyRisk !== undefined
+            ? `<strong>Road Safety Risk</strong>: ${detection.isRoadSafetyRisk ? "Yes" : "No"}`
+            : null,
           detection.confidence !== undefined
             ? `<strong>Confidence</strong>: ${Math.round(detection.confidence * 100)}%`
             : null,
           detection.verificationStatus
             ? `<strong>Verification</strong>: ${escapeHtml(detection.verificationStatus.replaceAll("_", " "))}`
+            : null,
+          detailLines.length > 0
+            ? `<details><summary><strong>${escapeHtml(detailTitle)}</strong></summary>${detailLines.join("<br/>")}</details>`
             : null,
         ]
           .filter((line): line is string => line !== null)
@@ -1004,7 +1422,7 @@ export function MapPanel({ data = null }: MapPanelProps) {
         infrastructurePoints.push({
           position: [point[1], point[0]],
           popupHtml,
-          icon: { ...PIN_ICON_SHAPE, url: createPinIconUrl(style.color) },
+          icon: { ...PIN_ICON_SHAPE, url: createPinIconUrl(pinColor) },
           size: 34,
         });
 
@@ -1058,10 +1476,10 @@ export function MapPanel({ data = null }: MapPanelProps) {
     overlay.setProps({
       layers: layers as never[],
       getTooltip: ({ object }: { object?: OverlayObject }) => {
-        const popupHtml = object?.popupHtml ?? object?.properties?.popupHtml;
-        if (!popupHtml) return null;
+        const hoverHtml = getHoverHtmlFromObject(object);
+        if (!hoverHtml) return null;
         return {
-          html: popupHtml,
+          html: hoverHtml,
           style: {
             backgroundColor: "#ffffff",
             color: "#111827",
@@ -1102,12 +1520,52 @@ export function MapPanel({ data = null }: MapPanelProps) {
   }, [
     data,
     filteredEconomicGaps,
+    filteredNoGoZones,
     filteredOpportunities,
     filteredInfrastructureDetections,
     isMapReady,
     layerVisibility,
     opportunityCoordinatesByAnchorId,
   ]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const overlay = overlayRef.current;
+    if (!isMapReady || !map || !overlay) return;
+
+    const picker = overlay as unknown as OverlayPicker;
+    const handleMapClick = (event: maplibregl.MapMouseEvent) => {
+      const picked = picker.pickObject({
+        x: event.point.x,
+        y: event.point.y,
+        radius: 6,
+      });
+      const popupHtml = getPopupHtmlFromObject(picked?.object);
+
+      if (!popupHtml) {
+        popupRef.current?.remove();
+        popupRef.current = null;
+        return;
+      }
+
+      popupRef.current?.remove();
+      popupRef.current = new maplibregl.Popup({
+        closeButton: true,
+        closeOnClick: true,
+        maxWidth: "360px",
+      })
+        .setLngLat([event.lngLat.lng, event.lngLat.lat])
+        .setHTML(
+          `<div style="font-size:12px;line-height:1.45;color:#111827;max-height:320px;overflow:auto;">${popupHtml}</div>`
+        )
+        .addTo(map);
+    };
+
+    map.on("click", handleMapClick);
+    return () => {
+      map.off("click", handleMapClick);
+    };
+  }, [isMapReady]);
 
   const setInfrastructureFilterValue = (value: InfrastructureCategoryFilter["value"]) => {
     setInfrastructureFilter({ value });
@@ -1379,149 +1837,275 @@ export function MapPanel({ data = null }: MapPanelProps) {
             </div>
             {!isFilterPanelMinimized && (
               <>
-                <p className="mb-2 text-sm font-semibold">Infrastructure Filter</p>
-                <label className="flex items-center gap-2 py-1">
-                  <input
-                    type="radio"
-                    name="infrastructure-filter"
-                    checked={infrastructureFilter.value === "all"}
-                    onChange={() => setInfrastructureFilterValue("all")}
-                  />
-                  <span>All</span>
-                </label>
-                <label className="flex items-center gap-2 py-1">
-                  <input
-                    type="radio"
-                    name="infrastructure-filter"
-                    checked={infrastructureFilter.value === "anchor_load"}
-                    onChange={() => setInfrastructureFilterValue("anchor_load")}
-                  />
-                  <span>Anchor Load</span>
-                </label>
-                <label className="flex items-center gap-2 py-1">
-                  <input
-                    type="radio"
-                    name="infrastructure-filter"
-                    checked={infrastructureFilter.value === "generation"}
-                    onChange={() => setInfrastructureFilterValue("generation")}
-                  />
-                  <span>Power Generation</span>
-                </label>
+                <Collapsible
+                  open={filterSectionOpen.infrastructure}
+                  onOpenChange={(isOpen) =>
+                    setFilterSectionOpen((previous) => ({ ...previous, infrastructure: isOpen }))
+                  }
+                >
+                  <CollapsibleTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between py-1 text-left text-sm font-semibold"
+                    >
+                      <span>Infrastructure Filter</span>
+                      {filterSectionOpen.infrastructure ? (
+                        <ChevronDown className="size-3.5" />
+                      ) : (
+                        <ChevronRight className="size-3.5" />
+                      )}
+                    </button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="pt-1">
+                    <label className="flex items-center gap-2 py-1">
+                      <input
+                        type="radio"
+                        name="infrastructure-filter"
+                        checked={infrastructureFilter.value === "all"}
+                        onChange={() => setInfrastructureFilterValue("all")}
+                      />
+                      <span>All</span>
+                    </label>
+                    <label className="flex items-center gap-2 py-1">
+                      <input
+                        type="radio"
+                        name="infrastructure-filter"
+                        checked={infrastructureFilter.value === "anchor_load"}
+                        onChange={() => setInfrastructureFilterValue("anchor_load")}
+                      />
+                      <span>Anchor Load</span>
+                    </label>
+                    <label className="flex items-center gap-2 py-1">
+                      <input
+                        type="radio"
+                        name="infrastructure-filter"
+                        checked={infrastructureFilter.value === "generation"}
+                        onChange={() => setInfrastructureFilterValue("generation")}
+                      />
+                      <span>Power Generation</span>
+                    </label>
+                    <label className="flex items-center gap-2 py-1">
+                      <input
+                        type="radio"
+                        name="infrastructure-filter"
+                        checked={infrastructureFilter.value === "road_safety"}
+                        onChange={() => setInfrastructureFilterValue("road_safety")}
+                      />
+                      <span>Road Safety Hazards</span>
+                    </label>
+                  </CollapsibleContent>
+                </Collapsible>
                 <div className="mt-3 border-t border-border pt-3">
-                  <p className="mb-2 text-sm font-semibold">Economic Gap Filter</p>
-                  <label className="mb-2 block">
-                    <span className="mb-1 block text-[11px] text-muted-foreground">Type</span>
-                    <select
-                      className="w-full rounded border border-border bg-background px-2 py-1"
-                      value={gapFilter.type}
-                      onChange={(event) =>
-                        setGapFilter((previous) => ({
-                          ...previous,
-                          type: event.target.value as GapFilter["type"],
-                        }))
-                      }
-                    >
-                      <option value="all">All types</option>
-                      <option value="Transmission Gap">Transmission Gap</option>
-                      <option value="Suppressed Demand Gap">Suppressed Demand Gap</option>
-                      <option value="Catalytic Gap">Catalytic Gap</option>
-                    </select>
-                  </label>
-                  <label className="mb-2 block">
-                    <span className="mb-1 block text-[11px] text-muted-foreground">Severity</span>
-                    <select
-                      className="w-full rounded border border-border bg-background px-2 py-1"
-                      value={gapFilter.severity}
-                      onChange={(event) =>
-                        setGapFilter((previous) => ({
-                          ...previous,
-                          severity: event.target.value as GapFilter["severity"],
-                        }))
-                      }
-                    >
-                      <option value="all">All severities</option>
-                      <option value="Critical">Critical</option>
-                      <option value="High">High</option>
-                      <option value="Medium">Medium</option>
-                    </select>
-                  </label>
-                  <label className="mb-2 block">
-                    <span className="mb-1 block text-[11px] text-muted-foreground">Phase</span>
-                    <select
-                      className="w-full rounded border border-border bg-background px-2 py-1"
-                      value={gapFilter.phase}
-                      onChange={(event) =>
-                        setGapFilter((previous) => ({
-                          ...previous,
-                          phase: event.target.value as GapFilter["phase"],
-                        }))
-                      }
-                    >
-                      <option value="all">All phases</option>
-                      <option value="Phase 1">Phase 1</option>
-                      <option value="Phase 2">Phase 2</option>
-                      <option value="Phase 3">Phase 3</option>
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-2 py-1">
-                    <input
-                      type="checkbox"
-                      checked={gapFilter.crossBorderOnly}
-                      onChange={(event) =>
-                        setGapFilter((previous) => ({
-                          ...previous,
-                          crossBorderOnly: event.target.checked,
-                        }))
-                      }
-                    />
-                    <span>Cross-border only</span>
-                  </label>
-                  <p className="mt-2 text-[11px] text-muted-foreground">
-                    Showing {filteredEconomicGaps.length} of {data?.economicGaps?.length ?? 0} gaps
-                  </p>
+                  <Collapsible
+                    open={filterSectionOpen.environment}
+                    onOpenChange={(isOpen) =>
+                      setFilterSectionOpen((previous) => ({ ...previous, environment: isOpen }))
+                    }
+                  >
+                    <CollapsibleTrigger asChild>
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between py-1 text-left text-sm font-semibold"
+                      >
+                        <span>Environment Filter</span>
+                        {filterSectionOpen.environment ? (
+                          <ChevronDown className="size-3.5" />
+                        ) : (
+                          <ChevronRight className="size-3.5" />
+                        )}
+                      </button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-1">
+                      <label className="flex items-center gap-2 py-1">
+                        <input
+                          type="radio"
+                          name="environment-filter"
+                          checked={constraintFilter.value === "all"}
+                          onChange={() => setConstraintFilter({ value: "all" })}
+                        />
+                        <span>All</span>
+                      </label>
+                      <label className="flex items-center gap-2 py-1">
+                        <input
+                          type="radio"
+                          name="environment-filter"
+                          checked={constraintFilter.value === "environmental"}
+                          onChange={() => setConstraintFilter({ value: "environmental" })}
+                        />
+                        <span>Environmental</span>
+                      </label>
+                      <label className="flex items-center gap-2 py-1">
+                        <input
+                          type="radio"
+                          name="environment-filter"
+                          checked={constraintFilter.value === "human_safety"}
+                          onChange={() => setConstraintFilter({ value: "human_safety" })}
+                        />
+                        <span>Human Safety</span>
+                      </label>
+                      <p className="mt-2 text-[11px] text-muted-foreground">
+                        Showing {filteredNoGoZones.length} of {data?.noGoZones?.length ?? 0} zones
+                      </p>
+                    </CollapsibleContent>
+                  </Collapsible>
                 </div>
                 <div className="mt-3 border-t border-border pt-3">
-                  <p className="mb-2 text-sm font-semibold">Opportunity Filter</p>
-                  <label className="mb-2 block">
-                    <span className="mb-1 block text-[11px] text-muted-foreground">Phase</span>
-                    <select
-                      className="w-full rounded border border-border bg-background px-2 py-1"
-                      value={opportunityFilter.phase}
-                      onChange={(event) =>
-                        setOpportunityFilter((previous) => ({
-                          ...previous,
-                          phase: event.target.value as OpportunityFilter["phase"],
-                        }))
-                      }
-                    >
-                      <option value="all">All phases</option>
-                      <option value="Phase 1">Phase 1</option>
-                      <option value="Phase 2">Phase 2</option>
-                      <option value="Phase 3">Phase 3</option>
-                    </select>
-                  </label>
-                  <label className="mb-1 block">
-                    <span className="mb-1 block text-[11px] text-muted-foreground">Top Ranked</span>
-                    <select
-                      className="w-full rounded border border-border bg-background px-2 py-1"
-                      value={opportunityFilter.topN}
-                      onChange={(event) =>
-                        setOpportunityFilter((previous) => ({
-                          ...previous,
-                          topN: Number(event.target.value) as OpportunityFilter["topN"],
-                        }))
-                      }
-                    >
-                      <option value={5}>Top 5</option>
-                      <option value={10}>Top 10</option>
-                      <option value={15}>Top 15</option>
-                      <option value={24}>Top 24</option>
-                    </select>
-                  </label>
-                  <p className="mt-2 text-[11px] text-muted-foreground">
-                    Showing {filteredOpportunities.length} of{" "}
-                    {data?.prioritizedOpportunities?.length ?? 0} opportunities
-                  </p>
+                  <Collapsible
+                    open={filterSectionOpen.economicGaps}
+                    onOpenChange={(isOpen) =>
+                      setFilterSectionOpen((previous) => ({ ...previous, economicGaps: isOpen }))
+                    }
+                  >
+                    <CollapsibleTrigger asChild>
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between py-1 text-left text-sm font-semibold"
+                      >
+                        <span>Economic Gap Filter</span>
+                        {filterSectionOpen.economicGaps ? (
+                          <ChevronDown className="size-3.5" />
+                        ) : (
+                          <ChevronRight className="size-3.5" />
+                        )}
+                      </button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-1">
+                      <label className="mb-2 block">
+                        <span className="mb-1 block text-[11px] text-muted-foreground">Type</span>
+                        <select
+                          className="w-full rounded border border-border bg-background px-2 py-1"
+                          value={gapFilter.type}
+                          onChange={(event) =>
+                            setGapFilter((previous) => ({
+                              ...previous,
+                              type: event.target.value as GapFilter["type"],
+                            }))
+                          }
+                        >
+                          <option value="all">All types</option>
+                          <option value="Transmission Gap">Transmission Gap</option>
+                          <option value="Suppressed Demand Gap">Suppressed Demand Gap</option>
+                          <option value="Catalytic Gap">Catalytic Gap</option>
+                        </select>
+                      </label>
+                      <label className="mb-2 block">
+                        <span className="mb-1 block text-[11px] text-muted-foreground">Severity</span>
+                        <select
+                          className="w-full rounded border border-border bg-background px-2 py-1"
+                          value={gapFilter.severity}
+                          onChange={(event) =>
+                            setGapFilter((previous) => ({
+                              ...previous,
+                              severity: event.target.value as GapFilter["severity"],
+                            }))
+                          }
+                        >
+                          <option value="all">All severities</option>
+                          <option value="Critical">Critical</option>
+                          <option value="High">High</option>
+                          <option value="Medium">Medium</option>
+                        </select>
+                      </label>
+                      <label className="mb-2 block">
+                        <span className="mb-1 block text-[11px] text-muted-foreground">Phase</span>
+                        <select
+                          className="w-full rounded border border-border bg-background px-2 py-1"
+                          value={gapFilter.phase}
+                          onChange={(event) =>
+                            setGapFilter((previous) => ({
+                              ...previous,
+                              phase: event.target.value as GapFilter["phase"],
+                            }))
+                          }
+                        >
+                          <option value="all">All phases</option>
+                          <option value="Phase 1">Phase 1</option>
+                          <option value="Phase 2">Phase 2</option>
+                          <option value="Phase 3">Phase 3</option>
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-2 py-1">
+                        <input
+                          type="checkbox"
+                          checked={gapFilter.crossBorderOnly}
+                          onChange={(event) =>
+                            setGapFilter((previous) => ({
+                              ...previous,
+                              crossBorderOnly: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>Cross-border only</span>
+                      </label>
+                      <p className="mt-2 text-[11px] text-muted-foreground">
+                        Showing {filteredEconomicGaps.length} of {data?.economicGaps?.length ?? 0} gaps
+                      </p>
+                    </CollapsibleContent>
+                  </Collapsible>
+                </div>
+                <div className="mt-3 border-t border-border pt-3">
+                  <Collapsible
+                    open={filterSectionOpen.opportunities}
+                    onOpenChange={(isOpen) =>
+                      setFilterSectionOpen((previous) => ({ ...previous, opportunities: isOpen }))
+                    }
+                  >
+                    <CollapsibleTrigger asChild>
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between py-1 text-left text-sm font-semibold"
+                      >
+                        <span>Opportunity Filter</span>
+                        {filterSectionOpen.opportunities ? (
+                          <ChevronDown className="size-3.5" />
+                        ) : (
+                          <ChevronRight className="size-3.5" />
+                        )}
+                      </button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-1">
+                      <label className="mb-2 block">
+                        <span className="mb-1 block text-[11px] text-muted-foreground">Phase</span>
+                        <select
+                          className="w-full rounded border border-border bg-background px-2 py-1"
+                          value={opportunityFilter.phase}
+                          onChange={(event) =>
+                            setOpportunityFilter((previous) => ({
+                              ...previous,
+                              phase: event.target.value as OpportunityFilter["phase"],
+                            }))
+                          }
+                        >
+                          <option value="all">All phases</option>
+                          <option value="Phase 1">Phase 1</option>
+                          <option value="Phase 2">Phase 2</option>
+                          <option value="Phase 3">Phase 3</option>
+                        </select>
+                      </label>
+                      <label className="mb-1 block">
+                        <span className="mb-1 block text-[11px] text-muted-foreground">Top Ranked</span>
+                        <select
+                          className="w-full rounded border border-border bg-background px-2 py-1"
+                          value={opportunityFilter.topN}
+                          onChange={(event) =>
+                            setOpportunityFilter((previous) => ({
+                              ...previous,
+                              topN: Number(event.target.value) as OpportunityFilter["topN"],
+                            }))
+                          }
+                        >
+                          <option value={5}>Top 5</option>
+                          <option value={10}>Top 10</option>
+                          <option value={15}>Top 15</option>
+                          <option value={24}>Top 24</option>
+                        </select>
+                      </label>
+                      <p className="mt-2 text-[11px] text-muted-foreground">
+                        Showing {filteredOpportunities.length} of{" "}
+                        {data?.prioritizedOpportunities?.length ?? 0} opportunities
+                      </p>
+                    </CollapsibleContent>
+                  </Collapsible>
                 </div>
               </>
             )}

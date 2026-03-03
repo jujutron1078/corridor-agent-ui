@@ -30,7 +30,7 @@ export function ChatComposer({
   onStop,
   disabled = false,
   maxChars,
-  placeholder = "Write a message...",
+  placeholder = "How can i help your today?",
   className,
 }: ChatComposerProps) {
   const charCount = value.length;
@@ -52,7 +52,7 @@ export function ChatComposer({
   return (
     <FieldGroup className={cn("w-full shrink-0", className)}>
       <Field>
-        <InputGroup className="min-h-[100px] rounded-2xl has-[[data-slot=input-group-control]:focus-visible]:border-input has-[[data-slot=input-group-control]:focus-visible]:ring-0">
+        <InputGroup className="min-h-[100px] rounded-2xl shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-input has-[[data-slot=input-group-control]:focus-visible]:ring-0">
           <InputGroupTextarea
             id="chat-input"
             placeholder={placeholder}

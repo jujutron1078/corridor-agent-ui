@@ -13,7 +13,6 @@ export const ASSISTANTS = [
   { id: "economic_impact_modeling_agent", label: "Economic Impact Modeling" },
   { id: "financing_optimization_agent", label: "Financing Optimization" },
   { id: "stakeholder_intelligence_agent", label: "Stakeholder Intelligence" },
-  { id: "realtime_monitoring_agent", label: "Realtime Monitoring" },
 ] as const;
 
 export type AssistantId = (typeof ASSISTANTS)[number]["id"];

@@ -4,6 +4,10 @@ export type GeneratedArtifact = {
   id: string;
   title: string;
   body: string;
+  table?: {
+    columns: string[];
+    rows: string[][];
+  };
 };
 
 export type CanvasDocument = {
@@ -11,7 +15,37 @@ export type CanvasDocument = {
   title: string;
   content: string;
   isJson?: boolean;
+  table?: {
+    columns: string[];
+    rows: string[][];
+  };
 };
+
+function formatUsdCompact(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return "-";
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function formatNumber(value: number | undefined, digits = 1): string {
+  if (value === undefined || !Number.isFinite(value)) return "-";
+  return new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: digits,
+  }).format(value);
+}
+
+function formatLabel(value: string): string {
+  return value
+    .replaceAll("_", " ")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
 
 export const EXAMPLE_CANVAS_DOCUMENTS: CanvasDocument[] = [
   {
@@ -93,6 +127,70 @@ export function buildGeneratedArtifacts(data: MapOverlayData | null): GeneratedA
     });
   }
 
+  if ((data.colocationSummary?.variants.length ?? 0) > 0) {
+    const colocationVariants = data.colocationSummary?.variants ?? [];
+    const recommendedVariant = data.colocationSummary?.recommendedVariant ?? "N/A";
+    const recommendationRationale =
+      data.colocationSummary?.recommendationRationale ?? "No recommendation rationale provided.";
+    const methodologyDescription =
+      data.colocationSummary?.savingsMethodology?.description ?? "No methodology description provided.";
+    const greenfieldUnitCosts = data.colocationSummary?.savingsMethodology?.greenfieldUnitCosts ?? {};
+    const coLocationUnitCosts = data.colocationSummary?.savingsMethodology?.coLocationUnitCosts ?? {};
+    const savingsRates = data.colocationSummary?.savingsMethodology?.savingsRatePerCategory ?? {};
+
+    const greenfieldLines = Object.entries(greenfieldUnitCosts).map(
+      ([key, value]) => `- ${formatLabel(key)}: ${formatUsdCompact(value)}`
+    );
+    const coLocatedLines = Object.entries(coLocationUnitCosts).map(
+      ([key, value]) => `- ${formatLabel(key)}: ${formatUsdCompact(value)}`
+    );
+    const savingsRateLines = Object.entries(savingsRates).map(
+      ([key, value]) => `- ${formatLabel(key)}: ${value}`
+    );
+
+    artifacts.push({
+      id: "colocation-benefits",
+      title: "Co-location Benefits",
+      body: [
+        `Recommended Variant: ${recommendedVariant}`,
+        ``,
+        `Rationale: ${recommendationRationale}`,
+        ``,
+        `Savings Methodology`,
+        `${methodologyDescription}`,
+        ``,
+        `Greenfield Unit Costs`,
+        ...(greenfieldLines.length > 0 ? greenfieldLines : ["- No unit costs provided."]),
+        ``,
+        `Co-located Unit Costs`,
+        ...(coLocatedLines.length > 0 ? coLocatedLines : ["- No unit costs provided."]),
+        ``,
+        `Savings Rate Per Category`,
+        ...(savingsRateLines.length > 0 ? savingsRateLines : ["- No category savings rates provided."]),
+      ].join("\n"),
+      table: {
+        columns: [
+          "Variant",
+          "Length (km)",
+          "Overlap (%)",
+          "Savings (USD)",
+          "Savings (% CAPEX)",
+          "Net CAPEX (USD)",
+        ],
+        rows: colocationVariants.map((variant) => [
+          variant.variantId,
+          formatNumber(variant.refinedLengthKm),
+          formatNumber(variant.refinedHighwayOverlapPct),
+          formatUsdCompact(variant.totalColocationSavingsUsd),
+          variant.savingsAsPctOfGrossCapex !== undefined
+            ? `${formatNumber(variant.savingsAsPctOfGrossCapex)}%`
+            : "-",
+          formatUsdCompact(variant.netCapexUsd),
+        ]),
+      },
+    });
+  }
+
   return artifacts;
 }
 
@@ -101,6 +199,7 @@ export function artifactToCanvasDocument(artifact: GeneratedArtifact): CanvasDoc
     id: `artifact-${artifact.id}`,
     title: artifact.title,
     content: artifact.body,
-    isJson: true,
+    isJson: artifact.table ? false : true,
+    table: artifact.table,
   };
 }

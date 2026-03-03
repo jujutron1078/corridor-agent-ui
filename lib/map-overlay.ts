@@ -34,6 +34,7 @@ export type MapOverlayData = {
   economicGapSummary?: EconomicGapSummary;
   prioritizedOpportunities?: PrioritizedOpportunity[];
   opportunitySummary?: OpportunitySummary;
+  colocationSummary?: ColocationSummary;
 };
 
 export type EconomicGap = {
@@ -94,6 +95,28 @@ export type OpportunitySummary = {
   phase1Count?: number;
   phase2Count?: number;
   phase3Count?: number;
+};
+
+export type ColocationVariant = {
+  variantId: string;
+  label: string;
+  refinedLengthKm?: number;
+  refinedHighwayOverlapPct?: number;
+  totalColocationSavingsUsd?: number;
+  savingsAsPctOfGrossCapex?: number;
+  netCapexUsd?: number;
+};
+
+export type ColocationSummary = {
+  recommendedVariant?: string;
+  recommendationRationale?: string;
+  savingsMethodology?: {
+    description?: string;
+    greenfieldUnitCosts?: Record<string, number>;
+    coLocationUnitCosts?: Record<string, number>;
+    savingsRatePerCategory?: Record<string, string>;
+  };
+  variants: ColocationVariant[];
 };
 
 export type CurrentDemandProfile = {
@@ -193,6 +216,7 @@ export type TerrainAnalysis = {
 export type NoGoZone = {
   zoneId?: string;
   description: string;
+  category?: string;
   latitude?: number;
   longitude?: number;
   radiusKm?: number;
@@ -210,8 +234,17 @@ export type InfrastructureDetection = {
   longitude: number;
   confidence?: number;
   verificationStatus?: string;
+  matchedKnownAsset?: boolean;
   isAnchorLoad?: boolean;
   isGenerationAsset?: boolean;
+  isRoadSafetyRisk?: boolean;
+  riskSeverity?: string;
+  reviewReason?: string;
+  changeNote?: string;
+  isNewSinceLastCensus?: boolean;
+  constructionActivityDetected?: boolean;
+  lastCensusDate?: string;
+  facilityAttributes?: Record<string, string | number | boolean>;
   gridInterconnectionPriority?: string;
   estimatedPowerDemandMw?: number;
   estimatedGenerationCapacityMw?: number;
@@ -252,12 +285,24 @@ export type RouteVariant = {
   throughputGwh?: number;
   revenueUsd?: number;
   ebitdaUsd?: number;
+  roadSafetyScore?: number;
+  roadSafetyScoreRationale?: string;
+  totalSafetyMitigationCapexUsd?: number;
+  combinedNetCapexIncludingSafetyUsd?: number;
+  safetyCapexAsPctOfNetCapex?: number;
+  safetyConflictsFullyMitigated?: number;
+  safetyConflictsPartiallyMitigated?: number;
+  safetyConflictsAvoidedByRouting?: number;
+  ess4PriorActionsAddressed?: number;
+  esgComplianceRating?: string;
   scoringBreakdown?: {
     capexScore?: number;
     terrainScore?: number;
     environmentalScore?: number;
     coLocationScore?: number;
     anchorLoadCoverage?: number;
+    roadSafetyScore?: number;
+    roadSafetyScoreRationale?: string;
   };
 };
 
@@ -294,6 +339,37 @@ function toBoolean(value: unknown): boolean | undefined {
     if (normalized === "false") return false;
   }
   return undefined;
+}
+
+function toPrimitiveAttributeValue(value: unknown): string | number | boolean | undefined {
+  if (typeof value === "string" && value.trim().length > 0) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "boolean") return value;
+  if (Array.isArray(value) && value.length > 0) {
+    const joined = value
+      .map((entry) => {
+        if (typeof entry === "string") return entry.trim();
+        if (typeof entry === "number" && Number.isFinite(entry)) return String(entry);
+        if (typeof entry === "boolean") return entry ? "true" : "false";
+        return "";
+      })
+      .filter((entry) => entry.length > 0)
+      .join(", ");
+    return joined.length > 0 ? joined : undefined;
+  }
+  return undefined;
+}
+
+function toAttributeRecord(value: unknown): Record<string, string | number | boolean> | undefined {
+  const record = toRecord(value);
+  if (!record) return undefined;
+
+  const normalizedEntries = Object.entries(record)
+    .map(([key, rawValue]) => [key, toPrimitiveAttributeValue(rawValue)] as const)
+    .filter((entry): entry is [string, string | number | boolean] => entry[1] !== undefined);
+
+  if (normalizedEntries.length === 0) return undefined;
+  return Object.fromEntries(normalizedEntries);
 }
 
 function parseGeoJsonPolygonCoordinates(geoJson: unknown): [number, number][] {
@@ -391,6 +467,7 @@ function parseToolContent(content: unknown): UnknownRecord | null {
       "constraints" in record ||
       "protected_area_conflicts" in record ||
       "wetland_and_water_body_conflicts" in record ||
+      "human_safety_conflicts" in record ||
       "detections" in record ||
       "anchor_catalog" in record ||
       "total_anchors_identified" in record ||
@@ -410,7 +487,12 @@ function parseToolContent(content: unknown): UnknownRecord | null {
       "phased_roadmap" in record ||
       "route_variants" in record ||
       "optimized_routes" in record ||
-      "routes" in record
+      "routes" in record ||
+      "refined_variants" in record ||
+      "refined_coordinates" in record ||
+      "refined_route_geojson" in record ||
+      "variant_colocation_analysis" in record ||
+      "comparative_summary" in record
     ) {
       return record;
     }
@@ -808,6 +890,7 @@ function parseNoGoZones(payload: UnknownRecord): NoGoZone[] {
       return {
         zoneId: toString(item.zone_id) ?? toString(item.id),
         description: toString(item.description) ?? toString(item.name) ?? "No-go zone",
+        category: toString(item.category),
         latitude: resolvedLatitude,
         longitude: resolvedLongitude,
         radiusKm: toNumber(item.radius_km ?? item.radiusKm) ?? undefined,
@@ -823,16 +906,16 @@ function parseNoGoZones(payload: UnknownRecord): NoGoZone[] {
     .filter((zone): zone is NoGoZone => zone !== null);
 }
 
-/** Parse protected_area_conflicts and wetland conflicts into NoGoZone[] (centroid + radius from overlap area). */
-function parseEnvironmentalConflictZones(payload: UnknownRecord): NoGoZone[] {
+/** Parse environmental and human safety conflicts into NoGoZone[] using available centroid/coordinate + radius data. */
+function parseConstraintConflictZones(payload: UnknownRecord): NoGoZone[] {
   const zones: NoGoZone[] = [];
 
-  const conflictArrays = [
+  const environmentalConflictArrays = [
     Array.isArray(payload.protected_area_conflicts) ? payload.protected_area_conflicts : [],
     Array.isArray(payload.wetland_and_water_body_conflicts) ? payload.wetland_and_water_body_conflicts : [],
   ] as unknown[][];
 
-  for (const arr of conflictArrays) {
+  for (const arr of environmentalConflictArrays) {
     for (const raw of arr) {
       const item = toRecord(raw);
       if (!item) continue;
@@ -854,6 +937,7 @@ function parseEnvironmentalConflictZones(payload: UnknownRecord): NoGoZone[] {
       zones.push({
         zoneId: toString(item.conflict_id) ?? toString(item.zone_id),
         description: name,
+        category: "environmental",
         latitude: lat,
         longitude: lng,
         radiusKm,
@@ -862,6 +946,38 @@ function parseEnvironmentalConflictZones(payload: UnknownRecord): NoGoZone[] {
         polygon: undefined,
       });
     }
+  }
+
+  const safetyConflicts = Array.isArray(payload.human_safety_conflicts)
+    ? payload.human_safety_conflicts
+    : [];
+  for (const raw of safetyConflicts) {
+    const item = toRecord(raw);
+    if (!item) continue;
+
+    const coordinates = toRecord(item.coordinates);
+    const lat = toNumber(coordinates?.latitude ?? coordinates?.lat);
+    const lng = toNumber(coordinates?.longitude ?? coordinates?.lng ?? coordinates?.lon);
+    if (lat === null || lng === null) continue;
+
+    const bufferMeters = toNumber(item.buffer_zone_m);
+    const bufferKm =
+      bufferMeters !== null && bufferMeters > 0 ? bufferMeters / 1000 : 0.2;
+    const name = toString(item.name) ?? "Human safety conflict";
+    const subtype = toString(item.subtype);
+    const riskLevel = toString(item.risk_level);
+
+    zones.push({
+      zoneId: toString(item.conflict_id) ?? toString(item.zone_id),
+      description: subtype ? `${name} (${subtype})` : name,
+      category: "human_safety",
+      latitude: lat,
+      longitude: lng,
+      radiusKm: bufferKm,
+      reason: toString(item.recommended_action) ?? toString(item.reason),
+      severity: riskLevel,
+      polygon: undefined,
+    });
   }
 
   return zones;
@@ -891,6 +1007,7 @@ function parseInfrastructureDetections(payload: UnknownRecord): InfrastructureDe
       const bottomRightLongitude = toNumber(bottomRight?.longitude);
 
       const anchorLoadClassification = toRecord(item.anchor_load_classification);
+      const changeDetection = toRecord(item.change_detection);
 
       return {
         detectionId:
@@ -914,8 +1031,17 @@ function parseInfrastructureDetections(payload: UnknownRecord): InfrastructureDe
           item.verification_status.trim().length > 0
             ? item.verification_status
             : undefined,
+        matchedKnownAsset: toBoolean(item.matched_known_asset),
         isAnchorLoad: toBoolean(item.is_anchor_load ?? item.isAnchorLoad),
         isGenerationAsset: toBoolean(item.is_generation_asset ?? item.isGenerationAsset),
+        isRoadSafetyRisk: toBoolean(item.is_road_safety_risk ?? item.isRoadSafetyRisk),
+        riskSeverity: toString(item.risk_severity),
+        reviewReason: toString(item.review_reason),
+        changeNote: toString(changeDetection?.change_note),
+        isNewSinceLastCensus: toBoolean(changeDetection?.is_new_since_last_census),
+        constructionActivityDetected: toBoolean(changeDetection?.construction_activity_detected),
+        lastCensusDate: toString(changeDetection?.last_census_date),
+        facilityAttributes: toAttributeRecord(item.facility_attributes),
         gridInterconnectionPriority:
           typeof anchorLoadClassification?.grid_interconnection_priority === "string" &&
           anchorLoadClassification.grid_interconnection_priority.trim().length > 0
@@ -1034,6 +1160,30 @@ function parseRouteVariants(payload: UnknownRecord): RouteVariant[] {
         throughputGwh: toNumber(financialIndicators?.estimated_year5_throughput_gwh) ?? undefined,
         revenueUsd: toNumber(financialIndicators?.estimated_year5_revenue_usd) ?? undefined,
         ebitdaUsd: toNumber(financialIndicators?.estimated_year5_ebitda_usd) ?? undefined,
+        roadSafetyScore:
+          toNumber(scoringBreakdown?.road_safety_score) ??
+          toNumber(item.road_safety_score) ??
+          undefined,
+        roadSafetyScoreRationale:
+          toString(scoringBreakdown?.road_safety_score_rationale) ??
+          toString(item.road_safety_score_rationale) ??
+          undefined,
+        totalSafetyMitigationCapexUsd:
+          toNumber(totals?.total_safety_mitigation_capex_usd) ?? undefined,
+        combinedNetCapexIncludingSafetyUsd:
+          toNumber(totals?.combined_net_capex_including_safety_usd) ?? undefined,
+        safetyCapexAsPctOfNetCapex:
+          toNumber(totals?.safety_capex_as_pct_of_net_capex) ?? undefined,
+        safetyConflictsFullyMitigated:
+          toNumber(totals?.safety_conflicts_fully_mitigated) ?? undefined,
+        safetyConflictsPartiallyMitigated:
+          toNumber(totals?.safety_conflicts_partially_mitigated) ?? undefined,
+        safetyConflictsAvoidedByRouting:
+          toNumber(totals?.safety_conflicts_avoided_by_routing) ?? undefined,
+        ess4PriorActionsAddressed:
+          toNumber(totals?.ess4_prior_actions_addressed) ?? undefined,
+        esgComplianceRating:
+          toString(totals?.esg_compliance_rating) ?? undefined,
         scoringBreakdown:
           scoringBreakdown !== null
             ? {
@@ -1042,6 +1192,9 @@ function parseRouteVariants(payload: UnknownRecord): RouteVariant[] {
                 environmentalScore: toNumber(scoringBreakdown.environmental_score) ?? undefined,
                 coLocationScore: toNumber(scoringBreakdown.co_location_score) ?? undefined,
                 anchorLoadCoverage: toNumber(scoringBreakdown.anchor_load_coverage) ?? undefined,
+                roadSafetyScore: toNumber(scoringBreakdown.road_safety_score) ?? undefined,
+                roadSafetyScoreRationale:
+                  toString(scoringBreakdown.road_safety_score_rationale) ?? undefined,
               }
             : undefined,
       };
@@ -1054,6 +1207,78 @@ function parseRouteVariants(payload: UnknownRecord): RouteVariant[] {
       if (!left.isRecommended && right.isRecommended) return 1;
       return leftRank - rightRank;
     });
+}
+
+function parseRefinedRouteVariants(payload: UnknownRecord): RouteVariant[] {
+  const rawVariants = Array.isArray(payload.refined_variants) ? payload.refined_variants : null;
+  if (!rawVariants) {
+    const singleRefinedRoute = firstNonEmptyCoordinates([
+      parseGeoJsonLineCoordinates(payload.refined_route_geojson),
+      parseLatLngArray(payload.refined_coordinates),
+    ]);
+    if (singleRefinedRoute.length < 2) return [];
+    return [
+      {
+        variantId: "REFINED-ROUTE",
+        label: "Refined Route",
+        rank: 1,
+        isRecommended: true,
+        route: singleRefinedRoute,
+      },
+    ];
+  }
+
+  const refinementSummary = toRecord(payload.refinement_summary);
+  const recommendedVariantId = toString(refinementSummary?.recommended_variant_post_refinement);
+
+  return rawVariants
+    .map((variant, index): RouteVariant | null => {
+      const item = toRecord(variant);
+      if (!item) return null;
+
+      const route = parseGeoJsonLineCoordinates(item.refined_route_geojson);
+      if (route.length < 2) return null;
+
+      const rank = index + 1;
+      const variantId = toString(item.id) ?? toString(item.source_variant_id) ?? undefined;
+      const label =
+        toString(item.label) ?? (variantId !== undefined ? variantId : `Refined Route ${rank}`);
+
+      const metricScores = toRecord(item.metric_scores);
+      const terrainScore = toNumber(toRecord(metricScores?.terrain_slope)?.score) ?? undefined;
+      const environmentalScore =
+        toNumber(toRecord(metricScores?.environmental_sensitivity)?.score) ?? undefined;
+      const landCostScore =
+        toNumber(toRecord(metricScores?.land_acquisition_cost)?.score) ?? undefined;
+      const constructionScore =
+        toNumber(toRecord(metricScores?.construction_logistics)?.score) ?? undefined;
+
+      return {
+        variantId,
+        label,
+        rank,
+        isRecommended:
+          (recommendedVariantId !== undefined && variantId === recommendedVariantId) ||
+          (recommendedVariantId === undefined && rank === 1),
+        route,
+        description: toString(item.length_delta_reason) ?? undefined,
+        compositeScore: toNumber(item.composite_score) ?? undefined,
+        distanceKm: toNumber(item.refined_length_km ?? item.geospatial_length_km) ?? undefined,
+        weightedAvgHighwayOverlapPct:
+          toNumber(item.refined_highway_overlap_pct ?? item.geospatial_highway_overlap_pct) ??
+          undefined,
+        scoringBreakdown:
+          metricScores !== null
+            ? {
+                terrainScore,
+                environmentalScore,
+                capexScore: landCostScore,
+                coLocationScore: constructionScore,
+              }
+            : undefined,
+      };
+    })
+    .filter((variant): variant is RouteVariant => variant !== null);
 }
 
 function parseEconomicGapAnalysis(
@@ -1219,6 +1444,98 @@ function parsePrioritizedOpportunities(
   };
 }
 
+function parseColocationSummary(payload: UnknownRecord): ColocationSummary | null {
+  const rawVariants = Array.isArray(payload.variant_colocation_analysis)
+    ? payload.variant_colocation_analysis
+    : null;
+  if (!rawVariants) return null;
+
+  const comparativeSummary = toRecord(payload.comparative_summary);
+  const ranking = Array.isArray(comparativeSummary?.variant_ranking_by_colocation_savings)
+    ? comparativeSummary.variant_ranking_by_colocation_savings
+    : [];
+  const rankingNetCapexByVariant = new Map<string, number>();
+  for (const entry of ranking) {
+    const item = toRecord(entry);
+    if (!item) continue;
+    const variantId = toString(item.variant_id);
+    const netCapexUsd = toNumber(item.net_capex_usd);
+    if (!variantId || netCapexUsd === null) continue;
+    rankingNetCapexByVariant.set(variantId, netCapexUsd);
+  }
+
+  const variants = rawVariants
+    .map((entry): ColocationVariant | null => {
+      const item = toRecord(entry);
+      if (!item) return null;
+
+      const variantId = toString(item.variant_id);
+      const label = toString(item.label);
+      if (!variantId || !label) return null;
+
+      return {
+        variantId,
+        label,
+        refinedLengthKm: toNumber(item.refined_length_km) ?? undefined,
+        refinedHighwayOverlapPct: toNumber(item.refined_highway_overlap_pct) ?? undefined,
+        totalColocationSavingsUsd: toNumber(item.total_colocation_savings_usd) ?? undefined,
+        savingsAsPctOfGrossCapex: toNumber(item.savings_as_pct_of_gross_capex) ?? undefined,
+        netCapexUsd: rankingNetCapexByVariant.get(variantId),
+      };
+    })
+    .filter((variant): variant is ColocationVariant => variant !== null)
+    .sort((left, right) => {
+      const leftSavings = left.totalColocationSavingsUsd ?? Number.NEGATIVE_INFINITY;
+      const rightSavings = right.totalColocationSavingsUsd ?? Number.NEGATIVE_INFINITY;
+      return rightSavings - leftSavings;
+    });
+
+  if (variants.length === 0) return null;
+
+  const savingsMethodologyRecord = toRecord(payload.savings_methodology);
+  const greenfieldUnitCostsRecord = toRecord(
+    savingsMethodologyRecord?.greenfield_unit_costs ??
+      savingsMethodologyRecord?.greenfield_costs
+  );
+  const coLocationUnitCostsRecord = toRecord(
+    savingsMethodologyRecord?.co_location_unit_costs ??
+      savingsMethodologyRecord?.colocation_unit_costs ??
+      savingsMethodologyRecord?.co_located_unit_costs
+  );
+  const savingsRatePerCategoryRecord = toRecord(
+    savingsMethodologyRecord?.savings_rate_per_category ??
+      savingsMethodologyRecord?.savings_rates_per_category
+  );
+
+  const toNumericRecord = (record: UnknownRecord | null): Record<string, number> | undefined => {
+    if (!record) return undefined;
+    const entries = Object.entries(record)
+      .map(([key, value]) => [key, toNumber(value)] as const)
+      .filter((entry): entry is [string, number] => entry[1] !== null);
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+  };
+
+  const toStringRecord = (record: UnknownRecord | null): Record<string, string> | undefined => {
+    if (!record) return undefined;
+    const entries = Object.entries(record)
+      .map(([key, value]) => [key, toString(value)] as const)
+      .filter((entry): entry is [string, string] => entry[1] !== undefined);
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+  };
+
+  return {
+    recommendedVariant: toString(comparativeSummary?.recommended_variant),
+    recommendationRationale: toString(comparativeSummary?.recommendation_rationale),
+    savingsMethodology: {
+      description: toString(savingsMethodologyRecord?.description),
+      greenfieldUnitCosts: toNumericRecord(greenfieldUnitCostsRecord),
+      coLocationUnitCosts: toNumericRecord(coLocationUnitCostsRecord),
+      savingsRatePerCategory: toStringRecord(savingsRatePerCategoryRecord),
+    },
+    variants,
+  };
+}
+
 function applyOverlayPayload(
   toolName: string | undefined,
   payload: UnknownRecord,
@@ -1239,6 +1556,7 @@ function applyOverlayPayload(
   let nextEconomicGapSummary = current.economicGapSummary;
   let nextPrioritizedOpportunities = current.prioritizedOpportunities;
   let nextOpportunitySummary = current.opportunitySummary;
+  let nextColocationSummary = current.colocationSummary;
 
   if (toolName === "geocode_location") {
     nextPoints = parseGeocodePoints(payload);
@@ -1265,7 +1583,7 @@ function applyOverlayPayload(
     toolName === "environmental_constraints"
   ) {
     const noGoZones = parseNoGoZones(payload);
-    const conflictZones = parseEnvironmentalConflictZones(payload);
+    const conflictZones = parseConstraintConflictZones(payload);
     const combined = [...noGoZones, ...conflictZones];
     if (combined.length > 0) {
       nextNoGoZones = combined;
@@ -1292,12 +1610,17 @@ function applyOverlayPayload(
     }
   }
 
-  if (
-    toolName === "route_optimization"
-  ) {
+  if (toolName === "route_optimization") {
     const routeVariants = parseRouteVariants(payload);
     if (routeVariants.length > 0) {
       nextRouteVariants = routeVariants;
+    }
+  }
+
+  if (toolName === "refine_optimized_routes") {
+    const refinedVariants = parseRefinedRouteVariants(payload);
+    if (refinedVariants.length > 0) {
+      nextRouteVariants = refinedVariants;
     }
   }
 
@@ -1351,6 +1674,36 @@ function applyOverlayPayload(
     }
   }
 
+  if (toolName === "quantify_colocation_benefits") {
+    const colocationSummary = parseColocationSummary(payload);
+    if (colocationSummary) {
+      const previous = nextColocationSummary;
+      const previousMethodology = previous?.savingsMethodology;
+      const incomingMethodology = colocationSummary.savingsMethodology;
+
+      nextColocationSummary = {
+        ...colocationSummary,
+        recommendedVariant:
+          colocationSummary.recommendedVariant ?? previous?.recommendedVariant,
+        recommendationRationale:
+          colocationSummary.recommendationRationale ?? previous?.recommendationRationale,
+        savingsMethodology: {
+          description:
+            incomingMethodology?.description ?? previousMethodology?.description,
+          greenfieldUnitCosts:
+            incomingMethodology?.greenfieldUnitCosts ??
+            previousMethodology?.greenfieldUnitCosts,
+          coLocationUnitCosts:
+            incomingMethodology?.coLocationUnitCosts ??
+            previousMethodology?.coLocationUnitCosts,
+          savingsRatePerCategory:
+            incomingMethodology?.savingsRatePerCategory ??
+            previousMethodology?.savingsRatePerCategory,
+        },
+      };
+    }
+  }
+
   return {
     points: nextPoints,
     polygon: nextPolygon,
@@ -1367,6 +1720,7 @@ function applyOverlayPayload(
     economicGapSummary: nextEconomicGapSummary,
     prioritizedOpportunities: nextPrioritizedOpportunities,
     opportunitySummary: nextOpportunitySummary,
+    colocationSummary: nextColocationSummary,
   };
 }
 
@@ -1383,6 +1737,7 @@ function finalizeOverlayData(data: MapOverlayData): MapOverlayData | null {
   const hasGrowthTrajectory = Boolean(data.growthTrajectory);
   const hasEconomicGaps = (data.economicGaps?.length ?? 0) > 0;
   const hasPrioritizedOpportunities = (data.prioritizedOpportunities?.length ?? 0) > 0;
+  const hasColocationSummary = (data.colocationSummary?.variants.length ?? 0) > 0;
   if (
     data.points.length === 0 &&
     data.polygon.length === 0 &&
@@ -1395,7 +1750,8 @@ function finalizeOverlayData(data: MapOverlayData): MapOverlayData | null {
     !hasBankability &&
     !hasGrowthTrajectory &&
     !hasEconomicGaps &&
-    !hasPrioritizedOpportunities
+    !hasPrioritizedOpportunities &&
+    !hasColocationSummary
   ) {
     return null;
   }
@@ -1418,6 +1774,7 @@ export function extractMapOverlayData(messages: Message[]): MapOverlayData | nul
     economicGapSummary: undefined,
     prioritizedOpportunities: undefined,
     opportunitySummary: undefined,
+    colocationSummary: undefined,
   };
 
   for (const message of messages) {
@@ -1449,6 +1806,7 @@ export function extractMapOverlayDataFromToolCalls(toolCalls: ToolCallLike[]): M
     economicGapSummary: undefined,
     prioritizedOpportunities: undefined,
     opportunitySummary: undefined,
+    colocationSummary: undefined,
   };
 
   for (const toolCall of toolCalls) {
