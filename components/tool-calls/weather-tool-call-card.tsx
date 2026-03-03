@@ -12,7 +12,7 @@ export function WeatherToolCallCard({ toolCall }: ToolCardProps) {
     typeof call.args.location === "string" ? call.args.location : "Unknown location";
 
   return (
-    <div className="relative overflow-hidden rounded-xl border border-sky-500/20">
+    <div className="relative overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-br from-sky-600 to-indigo-600" />
 
       <div className="relative p-4 text-white">
@@ -22,7 +22,7 @@ export function WeatherToolCallCard({ toolCall }: ToolCardProps) {
         </div>
 
         {parsedResult.status === "error" ? (
-          <div className="rounded-lg bg-red-500/30 p-3 text-sm text-red-100">
+          <div className="bg-red-500/30 p-3 text-sm text-red-100">
             {parsedResult.content}
           </div>
         ) : (
