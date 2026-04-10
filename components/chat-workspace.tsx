@@ -1,8 +1,11 @@
 "use client";
 
 import { useCallback, useSyncExternalStore, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Layers, BarChart3 } from "lucide-react";
 
 import { ChatPanel } from "@/components/chat-panel";
+import { DashboardLayout } from "@/components/dashboard/dashboard-layout";
 import { RightCanvasPanel } from "@/components/workspace/right-canvas-panel";
 import { SiteHeader } from "@/components/site-header";
 import { isSameMapData } from "@/lib/workspace/map-data-equality";
@@ -93,6 +96,8 @@ export function ChatWorkspace({
   isMapCanvasOpen,
   onToggleMapCanvas,
 }: ChatWorkspaceProps) {
+  const searchParams = useSearchParams();
+  const isDashboardView = searchParams.get("view") === "dashboard";
   const [mapData, setMapData] = useState<MapOverlayData | null>(null);
 
   const splitSizes = useSyncExternalStore(
@@ -117,6 +122,11 @@ export function ChatWorkspace({
   }, []);
 
   const [chatPanelSize, canvasPanelSize] = splitSizes;
+
+  // ── Data Dashboard ──
+  if (isDashboardView) {
+    return <DashboardLayout />;
+  }
 
   if (!isMapCanvasOpen) {
     return (

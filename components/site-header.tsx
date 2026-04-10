@@ -17,12 +17,11 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ASSISTANTS, useAssistant } from "@/lib/assistant-context";
 import { toast } from "sonner";
 import { ChevronDown, Loader2, PanelRightOpen, Plus } from "lucide-react";
+import { LANGGRAPH_API_URL } from "@/lib/constants";
 
 type SiteHeaderProps = {
   onMapClick?: () => void;
 };
-
-const LANGGRAPH_API_URL = "http://127.0.0.1:2024";
 const THREADS_UPDATED_EVENT = "corridor:threads-updated";
 type ThreadsUpdatedEventDetail = {
   projectId: string;

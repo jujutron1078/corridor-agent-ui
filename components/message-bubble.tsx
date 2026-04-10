@@ -4,7 +4,9 @@ import React from "react";
 import type { Message } from "@langchain/langgraph-sdk";
 
 import { MarkdownMessage } from "@/components/markdown-message";
+import { OpportunityCard } from "@/components/opportunities/opportunity-card";
 import { cn } from "@/lib/utils";
+import { parseOpportunities, type OpportunityData } from "@/lib/api/opportunities";
 
 function renderMessageContent(content: Message["content"]): React.ReactNode {
   if (typeof content === "string") {
@@ -49,7 +51,47 @@ function renderMessageContent(content: Message["content"]): React.ReactNode {
   return null;
 }
 
-export function MessageBubble({ message }: { message: Message }) {
+/**
+ * Split AI markdown content into text segments and embedded opportunity cards.
+ * Strips the opportunity-json fenced code blocks from the rendered markdown
+ * and renders OpportunityCard components in their place.
+ */
+function renderAiContentWithOpportunities(
+  content: string,
+  onSaveOpportunity?: (opportunity: OpportunityData) => Promise<void>
+): React.ReactNode {
+  const opportunities = parseOpportunities(content);
+
+  if (opportunities.length === 0 || !onSaveOpportunity) {
+    return <MarkdownMessage markdown={content} />;
+  }
+
+  // Remove the opportunity-json blocks from the markdown for clean rendering
+  const cleanedMarkdown = content.replace(
+    /```opportunity-json\s*\n[\s\S]*?```/g,
+    ""
+  );
+
+  return (
+    <>
+      <MarkdownMessage markdown={cleanedMarkdown} />
+      {opportunities.map((opp, i) => (
+        <OpportunityCard
+          key={`${opp.title}-${i}`}
+          opportunity={opp}
+          onSave={onSaveOpportunity}
+        />
+      ))}
+    </>
+  );
+}
+
+type MessageBubbleProps = {
+  message: Message;
+  onSaveOpportunity?: (opportunity: OpportunityData) => Promise<void>;
+};
+
+export function MessageBubble({ message, onSaveOpportunity }: MessageBubbleProps) {
   const isHuman = message.type === "human";
   const isAi = message.type === "ai";
 
@@ -64,7 +106,7 @@ export function MessageBubble({ message }: { message: Message }) {
         )}
       >
         {isAi && typeof message.content === "string" ? (
-          <MarkdownMessage markdown={message.content} />
+          renderAiContentWithOpportunities(message.content, onSaveOpportunity)
         ) : (
           renderMessageContent(message.content)
         )}
@@ -72,4 +114,3 @@ export function MessageBubble({ message }: { message: Message }) {
     </div>
   );
 }
-

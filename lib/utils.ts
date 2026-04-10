@@ -17,10 +17,10 @@ export function parseToolResult(result?: ToolMessage): {
   const raw = typeof result.content === "string" ? result.content : String(result.content);
 
   try {
-    const parsed = JSON.parse(raw) as { status?: string; content?: string };
+    const parsed = JSON.parse(raw) as { status?: string; content?: string; message?: string };
     return {
       status: parsed.status ?? "success",
-      content: parsed.content ?? raw,
+      content: parsed.content ?? parsed.message ?? raw,
     };
   } catch {
     return { status: "success", content: raw };

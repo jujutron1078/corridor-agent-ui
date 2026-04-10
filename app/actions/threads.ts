@@ -21,7 +21,7 @@ export type CreateThreadActionResult =
     }
 
 // Backend workspace API: create POST /workspace/threads, delete DELETE /workspace/threads/{project_id}/{thread_id}
-const THREADS_API_URL = process.env.THREADS_API_URL ?? "http://127.0.0.1:2024"
+const THREADS_API_URL = process.env.THREADS_API_URL ?? "http://localhost:8000"
 
 export async function createThreadAction({
   threadId,
@@ -75,6 +75,66 @@ type DeleteThreadApiResponse = {
 export type DeleteThreadActionResult =
   | { ok: true; message: string }
   | { ok: false; message: string }
+
+// ── Generate thread name ─────────────────────────────────────────────────
+
+type GenerateNameApiResponse = {
+  success: boolean
+  message: string
+  data: { thread_id: string; project_id: string; name: string } | null
+}
+
+export type GenerateThreadNameActionResult =
+  | { ok: true; name: string; message: string }
+  | { ok: false; message: string }
+
+export async function generateThreadNameAction({
+  projectId,
+  threadId,
+  message,
+}: {
+  projectId: string
+  threadId: string
+  message: string
+}): Promise<GenerateThreadNameActionResult> {
+  if (!projectId || !threadId || !message) {
+    return { ok: false, message: "projectId, threadId, and message are required." }
+  }
+
+  try {
+    const response = await fetch(
+      `${THREADS_API_URL}/workspace/threads/${encodeURIComponent(projectId)}/${encodeURIComponent(threadId)}/generate-name`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message }),
+        cache: "no-store",
+      }
+    )
+
+    const payload = (await response.json()) as GenerateNameApiResponse
+
+    if (!response.ok || !payload.success || !payload.data?.name) {
+      return {
+        ok: false,
+        message: payload.message || "Unable to generate thread name.",
+      }
+    }
+
+    return {
+      ok: true,
+      name: payload.data.name,
+      message: payload.message,
+    }
+  } catch {
+    return {
+      ok: false,
+      message: "Unable to reach thread service.",
+    }
+  }
+}
+
+// ── Delete thread ────────────────────────────────────────────────────────
 
 export async function deleteThreadAction({
   projectId,

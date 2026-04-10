@@ -4,7 +4,20 @@ import * as React from "react"
 import { Client } from "@langchain/langgraph-sdk"
 import Image from "next/image"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { IconFolder } from "@tabler/icons-react"
+import {
+  IconFolder,
+  IconMap2,
+  IconBuildingFactory2,
+  IconScale,
+  IconUsers,
+  IconBeach,
+  IconPlant2,
+  IconRoad,
+  IconTrendingUp,
+  IconFolderOpen,
+  IconPresentationAnalytics,
+  IconBulb,
+} from "@tabler/icons-react"
 
 import {
   getProjectsAction,
@@ -26,13 +39,19 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar"
-
-const LANGGRAPH_API_URL = "http://127.0.0.1:2024"
+import { LANGGRAPH_API_URL } from "@/lib/constants"
 const THREADS_UPDATED_EVENT = "corridor:threads-updated"
 type ThreadsUpdatedEventDetail = {
   projectId: string
   projectName: string
   threadId: string
+}
+
+const THREAD_NAME_UPDATED_EVENT = "corridor:thread-name-updated"
+type ThreadNameUpdatedEventDetail = {
+  projectId: string
+  threadId: string
+  name: string
 }
 
 const data = {
@@ -59,7 +78,7 @@ function mapProjectsForSidebar(
   projects: {
     project_id: string
     name: string
-    threads: { thread_id: string; created_at: string }[]
+    threads: { thread_id: string; name?: string; created_at: string }[]
   }[]
 ): SidebarProject[] {
   return projects.map((project) => ({
@@ -69,7 +88,7 @@ function mapProjectsForSidebar(
     icon: IconFolder,
     threads: project.threads.map((thread) => ({
       threadId: thread.thread_id,
-      name: thread.thread_id,
+      name: thread.name || thread.thread_id,
       url: `/?project_id=${encodeURIComponent(project.project_id)}&project_name=${encodeURIComponent(project.name)}&thread=${encodeURIComponent(thread.thread_id)}`,
     })),
   }))
@@ -89,8 +108,27 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const loadProjects = React.useCallback(async () => {
     const result = await getProjectsAction()
     if (!result.ok) return
-    setProjectsData(mapProjectsForSidebar(result.projects))
-  }, [])
+    const projects = mapProjectsForSidebar(result.projects)
+    setProjectsData(projects)
+
+    // Background: validate threads still exist in LangGraph, clean up stale ones
+    for (const project of projects) {
+      for (const thread of project.threads) {
+        client.threads.get(thread.threadId).catch(() => {
+          // Thread no longer exists in LangGraph — remove from sidebar
+          setProjectsData((prev) =>
+            prev.map((p) =>
+              p.projectId === project.projectId
+                ? { ...p, threads: p.threads.filter((t) => t.threadId !== thread.threadId) }
+                : p
+            )
+          )
+          // Also clean from backend workspace
+          deleteThreadAction({ projectId: project.projectId, threadId: thread.threadId }).catch(() => {})
+        })
+      }
+    }
+  }, [client])
 
   React.useEffect(() => {
     void loadProjects()
@@ -116,7 +154,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               ...project.threads,
               {
                 threadId: detail.threadId,
-                name: detail.threadId,
+                name: "New chat",
                 url: `/?project_id=${encodeURIComponent(detail.projectId)}&project_name=${encodeURIComponent(detail.projectName)}&thread=${encodeURIComponent(detail.threadId)}`,
               },
             ],
@@ -125,9 +163,30 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       )
     }
 
+    const handleThreadNameUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<ThreadNameUpdatedEventDetail>).detail
+      if (!detail?.projectId || !detail?.threadId || !detail?.name) return
+
+      setProjectsData((previous) =>
+        previous.map((project) => {
+          if (project.projectId !== detail.projectId) return project
+          return {
+            ...project,
+            threads: project.threads.map((thread) =>
+              thread.threadId === detail.threadId
+                ? { ...thread, name: detail.name }
+                : thread
+            ),
+          }
+        })
+      )
+    }
+
     window.addEventListener(THREADS_UPDATED_EVENT, handleThreadsUpdated)
+    window.addEventListener(THREAD_NAME_UPDATED_EVENT, handleThreadNameUpdated)
     return () => {
       window.removeEventListener(THREADS_UPDATED_EVENT, handleThreadsUpdated)
+      window.removeEventListener(THREAD_NAME_UPDATED_EVENT, handleThreadNameUpdated)
     }
   }, [loadProjects])
 
@@ -238,7 +297,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                     ...project.threads,
                     {
                       threadId: createdThread.thread_id,
-                      name: createdThread.thread_id,
+                      name: "New chat",
                       url: `/?project_id=${encodeURIComponent(projectId)}&project_name=${encodeURIComponent(projectName)}&thread=${encodeURIComponent(createdThread.thread_id)}`,
                     },
                   ],
@@ -342,19 +401,31 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               <a href="#">
                 <Image
                   src="/corridor-favicon.svg"
-                  alt="Corridor Agent"
+                  alt="Corridor Intelligence"
                   width={20}
                   height={20}
                   className="shrink-0"
                 />
-                <span className="text-base font-semibold">Corridor Agents</span>
+                <span className="text-base font-semibold">Corridor Intelligence</span>
               </a>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={[]} />
+        <NavMain items={[
+          { title: "Corridor Overview", url: "/overview", icon: IconMap2 },
+          { title: "Manufacturing", url: "/manufacturing", icon: IconBuildingFactory2 },
+          { title: "Policy", url: "/policy", icon: IconScale },
+          { title: "Stakeholders", url: "/stakeholders", icon: IconUsers },
+          { title: "Tourism", url: "/tourism", icon: IconBeach },
+          { title: "Agriculture", url: "/agriculture", icon: IconPlant2 },
+          { title: "Infrastructure", url: "/infrastructure", icon: IconRoad },
+          { title: "Economy", url: "/economy", icon: IconTrendingUp },
+          { title: "Projects", url: "/projects", icon: IconFolderOpen },
+          { title: "Opportunities", url: "/opportunities", icon: IconBulb },
+          { title: "Investor Dashboard", url: "/dashboard", icon: IconPresentationAnalytics },
+        ]} />
         <NavProjects
           items={projectsData}
           onDeleteThread={handleDeleteThread}

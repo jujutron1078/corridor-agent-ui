@@ -13,8 +13,10 @@ export const TOOL_CARD_REGISTRY: Record<string, ToolCardComponent> = {
   todo: TodoToolCallCard,
   todos: TodoToolCallCard,
   update_todos: TodoToolCallCard,
+  write_todos: TodoToolCallCard,
   thinking: ThinkingToolCallCard,
   think: ThinkingToolCallCard,
+  think_tool: ThinkingToolCallCard,
   reflection: ThinkingToolCallCard,
 };
 

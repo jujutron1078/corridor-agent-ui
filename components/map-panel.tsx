@@ -2,11 +2,16 @@
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
-import { GeoJsonLayer, IconLayer, PathLayer, PolygonLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { ArcLayer, GeoJsonLayer, IconLayer, PathLayer, PolygonLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { ChevronDown, ChevronRight, Maximize2, Minimize2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Maximize2, Minimize2 } from "lucide-react";
 import maplibregl, { Map as MapLibreMap, Popup as MapLibrePopup } from "maplibre-gl";
 import type { Feature, FeatureCollection, Polygon } from "geojson";
+
+import { DATA_LAYERS, DATA_LAYER_GROUPS, type DataLayerConfig } from "@/lib/data-layers";
+import { useDataLayers, type DataLayerStore } from "@/hooks/use-data-layers";
+import { useDataLayersContext } from "@/hooks/data-layers-context";
+import { CORRIDOR_ROUTE_GEOJSON, CORRIDOR_NODES } from "@/lib/corridor-route";
 
 import {
   Collapsible,
@@ -776,11 +781,300 @@ function circlePolygon(center: [number, number], radiusKm: number): [number, num
   return points;
 }
 
+// ── Data Layer → deck.gl conversion ──────────────────────────────────────────
+
+type ArcDatum = { source: number[]; target: number[]; flow: string; processing_stage: string; trade_value_usd: number; partner_name: string; commodity: string; hoverHtml?: string; popupHtml?: string };
+
+function makeArcTooltip(d: ArcDatum): string {
+  const flow = d.flow === "export" ? "Export" : "Import";
+  const stage = d.processing_stage === "raw" ? "Raw" : d.processing_stage === "processed" ? "Processed" : d.processing_stage;
+  const value = d.trade_value_usd >= 1e9 ? `$${(d.trade_value_usd / 1e9).toFixed(1)}B` : d.trade_value_usd >= 1e6 ? `$${(d.trade_value_usd / 1e6).toFixed(1)}M` : `$${d.trade_value_usd.toLocaleString()}`;
+  return [
+    `<strong>${escapeHtml(d.commodity.charAt(0).toUpperCase() + d.commodity.slice(1))} — ${flow}</strong>`,
+    `<strong>Partner</strong>: ${escapeHtml(d.partner_name)}`,
+    `<strong>Value</strong>: ${value}`,
+    `<strong>Stage</strong>: ${stage}`,
+  ].join("<br/>");
+}
+
+function makeFeatureTooltip(cfg: DataLayerConfig, f: Feature): string {
+  const props = f.properties ?? {};
+
+  // Special tooltip for projects
+  if (cfg.id === "projects") {
+    const lines = [`<strong>${escapeHtml(String(props.name ?? "Project"))}</strong>`];
+    if (props.sector) lines.push(`<strong>Sector</strong>: ${escapeHtml(String(props.sector))}`);
+    if (props.status) {
+      const status = String(props.status);
+      const statusIcon = status === "Active" ? "●" : status === "Closed" ? "✓" : status === "Proposed" ? "◌" : "○";
+      lines.push(`<strong>Status</strong>: ${statusIcon} ${escapeHtml(status)}`);
+    }
+    if (props.countries) lines.push(`<strong>Countries</strong>: ${escapeHtml(String(props.countries))}`);
+    const cost = Number(props.cost_usd_million);
+    if (cost > 0) lines.push(`<strong>Cost</strong>: $${cost >= 1000 ? `${(cost/1000).toFixed(1)}B` : `${cost.toFixed(0)}M`}`);
+    // Policy context
+    const policy = String(props.policy ?? "");
+    if (policy) {
+      lines.push(`<hr style="margin:4px 0;border-color:#e5e7eb"/>`);
+      lines.push(`<strong style="color:#6366f1">Policy Environment</strong>`);
+      for (const segment of policy.split(" // ")) {
+        const parts = segment.split(" | ");
+        const country = parts[0] ?? "";
+        const details = parts.slice(1);
+        const isPriority = details.includes("PRIORITY SECTOR");
+        const detailsFiltered = details.filter((d) => d !== "PRIORITY SECTOR");
+        lines.push(`<strong>${escapeHtml(country)}</strong>${isPriority ? ' <span style="color:#22c55e;font-weight:600">★ Priority Sector</span>' : ""}`);
+        if (detailsFiltered.length > 0) lines.push(`<span style="color:#666">${escapeHtml(detailsFiltered.join(" · "))}</span>`);
+      }
+    }
+    if (props.source) lines.push(`<em style="color:#999;font-size:10px">${escapeHtml(String(props.source))}</em>`);
+    return lines.join("<br/>");
+  }
+
+  const lines = [`<strong>${escapeHtml(cfg.label)}</strong>`];
+  const name = props.name ?? props.Name ?? props.facility_name ?? props.FeatureNam;
+  if (name) lines.push(`<strong>Name</strong>: ${escapeHtml(String(name))}`);
+  for (const [k, v] of Object.entries(props)) {
+    if (["name", "Name", "facility_name", "FeatureNam", "infrastructure_type", "facility_type", "feature_type", "source_layer", "hoverHtml", "popupHtml"].includes(k)) continue;
+    if (v == null || v === "") continue;
+    const display = typeof v === "number" ? v.toLocaleString() : String(v);
+    if (display.length > 200) continue;
+    lines.push(`<strong>${escapeHtml(k)}</strong>: ${escapeHtml(display)}`);
+    if (lines.length > 8) { lines.push("..."); break; }
+  }
+  return lines.join("<br/>");
+}
+
+function buildDataDeckLayers(store: DataLayerStore, projectSectorFilter?: Set<string>, projectStatusFilter?: Set<string>): unknown[] {
+  const layers: unknown[] = [];
+
+  for (const cfg of DATA_LAYERS) {
+    const state = store[cfg.id];
+    if (!state?.active) continue;
+
+    // Skip raster layers here — handled separately via MapLibre sources
+    if (cfg.geometryType === "raster") continue;
+
+    // Arc layers use rawData
+    if (cfg.geometryType === "arc") {
+      const raw = state.rawData as { arcs?: ArcDatum[] } | undefined;
+      const arcs = (raw?.arcs?.filter((a) => a.source && a.target) ?? []).map((a) => ({
+        ...a,
+        hoverHtml: makeArcTooltip(a),
+        popupHtml: makeArcTooltip(a),
+      }));
+      if (arcs.length === 0) continue;
+      layers.push(
+        new ArcLayer({
+          id: `data-${cfg.id}`,
+          data: arcs,
+          getSourcePosition: (d: ArcDatum) => d.source as [number, number],
+          getTargetPosition: (d: ArcDatum) => d.target as [number, number],
+          getSourceColor: (d: ArcDatum) => {
+            if (d.flow === "export") return d.processing_stage === "raw" ? [34, 197, 94, 140] : [34, 197, 94, 220];
+            return d.processing_stage === "raw" ? [239, 68, 68, 140] : [239, 68, 68, 220];
+          },
+          getTargetColor: (d: ArcDatum) => {
+            if (d.flow === "export") return d.processing_stage === "raw" ? [34, 197, 94, 50] : [34, 197, 94, 90];
+            return d.processing_stage === "raw" ? [239, 68, 68, 50] : [239, 68, 68, 90];
+          },
+          getWidth: (d: ArcDatum) => {
+            const base = Math.max(1, Math.min(8, Math.log10(d.trade_value_usd / 1e6 + 1) * 2));
+            return d.processing_stage === "raw" ? base * 0.6 : base;
+          },
+          pickable: true,
+          autoHighlight: true,
+          highlightColor: [255, 255, 255, 80],
+          greatCircle: true,
+        }),
+      );
+      continue;
+    }
+
+    if (!state.data || state.data.features.length === 0) continue;
+
+    const getColor = (f: Feature): [number, number, number, number] => {
+      if (cfg.colorBy) {
+        const val = String(f.properties?.[cfg.colorBy.property] ?? "");
+        const c = cfg.colorBy.map[val] ?? cfg.colorBy.fallback;
+        return [c[0], c[1], c[2], 200];
+      }
+      return [cfg.color[0], cfg.color[1], cfg.color[2], 200];
+    };
+
+    // Filter project features by sector and/or status if filters are active
+    let sourceFeatures = state.data.features;
+    if (cfg.id === "projects") {
+      if (projectSectorFilter && projectSectorFilter.size > 0) {
+        sourceFeatures = sourceFeatures.filter((f) => projectSectorFilter.has(String(f.properties?.sector ?? "")));
+      }
+      if (projectStatusFilter && projectStatusFilter.size > 0) {
+        sourceFeatures = sourceFeatures.filter((f) => projectStatusFilter.has(String(f.properties?.status ?? "")));
+      }
+    }
+
+    // Set hoverHtml on each feature so the tooltip system picks it up
+    const dataWithTooltips: FeatureCollection = {
+      type: "FeatureCollection",
+      features: sourceFeatures.map((f) => ({
+        ...f,
+        properties: {
+          ...f.properties,
+          hoverHtml: makeFeatureTooltip(cfg, f),
+          popupHtml: makeFeatureTooltip(cfg, f),
+        },
+      })),
+    };
+
+    if (cfg.geometryType === "line") {
+      layers.push(
+        new GeoJsonLayer({
+          id: `data-${cfg.id}`,
+          data: dataWithTooltips,
+          pickable: true,
+          autoHighlight: true,
+          highlightColor: [255, 255, 255, 80],
+          stroked: true,
+          filled: false,
+          getLineColor: (f: Feature) => getColor(f),
+          lineWidthMinPixels: cfg.id.startsWith("roads") ? 1 : 2,
+          lineWidthMaxPixels: cfg.id.startsWith("roads") ? 3 : 4,
+          getLineWidth: (f: Feature) => {
+            if (cfg.id.startsWith("roads")) {
+              const tier = Number(f.properties?.tier ?? 4);
+              return tier === 1 ? 3 : tier === 2 ? 2 : 1;
+            }
+            return 2;
+          },
+          widthScale: 1,
+        }),
+      );
+    } else if (cfg.geometryType === "polygon") {
+      const isReference = cfg.group === "Reference";
+      layers.push(
+        new GeoJsonLayer({
+          id: `data-${cfg.id}`,
+          data: dataWithTooltips,
+          pickable: true,
+          autoHighlight: true,
+          highlightColor: [255, 255, 255, 40],
+          stroked: true,
+          filled: true,
+          getFillColor: [...cfg.color, isReference ? 15 : 60] as [number, number, number, number],
+          getLineColor: [...cfg.color, isReference ? 120 : 180] as [number, number, number, number],
+          lineWidthMinPixels: isReference ? 2 : 1,
+        }),
+      );
+    } else if (cfg.id === "projects") {
+      // Projects layer — larger points, dashed outline for proposed, solid for active
+      layers.push(
+        new GeoJsonLayer({
+          id: `data-${cfg.id}`,
+          data: dataWithTooltips,
+          pickable: true,
+          autoHighlight: true,
+          highlightColor: [255, 255, 255, 120],
+          pointType: "circle",
+          getFillColor: (f: Feature) => {
+            const color = getColor(f);
+            const status = String(f.properties?.status ?? "").toLowerCase();
+            // Proposed/planned projects: more transparent
+            if (status === "proposed" || status === "planned" || status === "under preparation") {
+              return [color[0], color[1], color[2], 120] as [number, number, number, number];
+            }
+            return color;
+          },
+          getPointRadius: 5000,
+          pointRadiusMinPixels: 6,
+          pointRadiusMaxPixels: 16,
+          stroked: true,
+          getLineColor: (f: Feature) => {
+            const status = String(f.properties?.status ?? "").toLowerCase();
+            if (status === "proposed" || status === "planned" || status === "under preparation") {
+              return [255, 255, 255, 100] as [number, number, number, number];
+            }
+            if (status === "closed" || status === "completed") {
+              return [34, 197, 94, 220] as [number, number, number, number];
+            }
+            return [255, 255, 255, 220] as [number, number, number, number];
+          },
+          lineWidthMinPixels: 2,
+          getDashArray: (f: Feature) => {
+            const status = String(f.properties?.status ?? "").toLowerCase();
+            if (status === "proposed" || status === "planned" || status === "under preparation") {
+              return [4, 4];
+            }
+            return [0, 0];
+          },
+          dashJustified: true,
+          extensions: [],
+        }),
+      );
+    } else {
+      // Point layers
+      const isCities = cfg.id === "cities";
+      layers.push(
+        new GeoJsonLayer({
+          id: `data-${cfg.id}`,
+          data: dataWithTooltips,
+          pickable: true,
+          autoHighlight: true,
+          highlightColor: [255, 255, 255, 120],
+          pointType: "circle",
+          getFillColor: (f: Feature) => getColor(f),
+          getPointRadius: isCities ? 6000 : cfg.id === "conflict" ? 4000 : 3000,
+          pointRadiusMinPixels: isCities ? 5 : 3,
+          pointRadiusMaxPixels: isCities ? 16 : 12,
+          stroked: true,
+          getLineColor: isCities ? [0, 0, 0, 200] : [255, 255, 255, 200],
+          lineWidthMinPixels: 1,
+        }),
+      );
+    }
+  }
+
+  return layers;
+}
+
+// ── Legend entries from active data layers ────────────────────────────────────
+
+type LegendEntry = { color: [number, number, number]; label: string };
+type LegendGroup = { groupLabel: string; entries: LegendEntry[] };
+
+function buildLegendGroups(store: DataLayerStore): LegendGroup[] {
+  const groups: LegendGroup[] = [];
+
+  for (const grp of DATA_LAYER_GROUPS) {
+    const entries: LegendEntry[] = [];
+    for (const cfg of DATA_LAYERS.filter((l) => l.group === grp.key)) {
+      if (!store[cfg.id]?.active) continue;
+
+      if (cfg.colorBy) {
+        for (const [val, col] of Object.entries(cfg.colorBy.map)) {
+          entries.push({ color: col, label: `${cfg.label}: ${val}` });
+        }
+      } else {
+        entries.push({ color: cfg.color, label: cfg.label });
+      }
+    }
+    if (entries.length > 0) groups.push({ groupLabel: grp.label, entries });
+  }
+
+  return groups;
+}
+
 type MapPanelProps = {
   data?: MapOverlayData | null;
+  hideDataLayers?: boolean;
+  /** Render only the data-layer sidebar, no map */
+  dataLayerSidebarOnly?: boolean;
+  /** Show the gold corridor highway alignment line */
+  corridorLine?: boolean;
+  /** If true, do not render any data layers on the map (for chat/agent map) */
+  noDataLayers?: boolean;
 };
 
-export function MapPanel({ data = null }: MapPanelProps) {
+export function MapPanel({ data = null, hideDataLayers = false, dataLayerSidebarOnly = false, corridorLine = false, noDataLayers = false }: MapPanelProps) {
   const panelFrameRef = useRef<HTMLDivElement>(null);
   const filterPanelRef = useRef<HTMLDivElement>(null);
   const layerTogglePanelRef = useRef<HTMLDivElement>(null);
@@ -788,6 +1082,7 @@ export function MapPanel({ data = null }: MapPanelProps) {
   const mapRef = useRef<MapLibreMap | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const popupRef = useRef<MapLibrePopup | null>(null);
+  const dataLayerStoreRef = useRef<DataLayerStore>({});
   const filterPanelDragRef = useRef<{
     pointerId: number;
     offsetX: number;
@@ -799,6 +1094,18 @@ export function MapPanel({ data = null }: MapPanelProps) {
     offsetY: number;
   } | null>(null);
   const [isMapReady, setIsMapReady] = useState(false);
+
+  // ── Live data layers (shared context in dashboard mode, own hook otherwise) ──
+  const sharedCtx = useDataLayersContext();
+  const ownLayers = useDataLayers();
+  // Skip data layers when explicitly disabled via prop (chat/agent map)
+  const skipDataLayers = noDataLayers;
+  const { store: dataLayerStore, toggleLayer: toggleDataLayer } = sharedCtx ?? ownLayers;
+  const projectSectorFilter = sharedCtx?.projectSectorFilter;
+  const projectStatusFilter = sharedCtx?.projectStatusFilter;
+  dataLayerStoreRef.current = dataLayerStore;
+  const dataDeckLayers = useMemo(() => skipDataLayers ? [] : buildDataDeckLayers(dataLayerStore, projectSectorFilter, projectStatusFilter), [dataLayerStore, projectSectorFilter, projectStatusFilter, skipDataLayers]);
+  const legendGroups = useMemo(() => skipDataLayers ? [] : buildLegendGroups(dataLayerStore), [dataLayerStore, skipDataLayers]);
   const [filterPanelPosition, setFilterPanelPosition] = useState<{ x: number; y: number } | null>(() =>
     readStoredPanelPosition(FILTER_PANEL_POSITION_STORAGE_KEY)
   );
@@ -940,6 +1247,40 @@ export function MapPanel({ data = null }: MapPanelProps) {
     };
   }, []);
 
+  // ── Raster tile layers (MapLibre sources) ──
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!isMapReady || !map) return;
+
+    for (const cfg of DATA_LAYERS) {
+      if (cfg.geometryType !== "raster") continue;
+      const state = dataLayerStore[cfg.id];
+      const sourceId = `raster-${cfg.id}`;
+      const layerId = `raster-layer-${cfg.id}`;
+      const isActive = state?.active && state.rawData;
+      const raw = state?.rawData as { tile_url?: string } | undefined;
+
+      if (isActive && raw?.tile_url) {
+        if (!map.getSource(sourceId)) {
+          map.addSource(sourceId, {
+            type: "raster",
+            tiles: [raw.tile_url],
+            tileSize: 256,
+          });
+          map.addLayer({
+            id: layerId,
+            type: "raster",
+            source: sourceId,
+            paint: { "raster-opacity": 0.6 },
+          });
+        }
+      } else {
+        if (map.getLayer(layerId)) map.removeLayer(layerId);
+        if (map.getSource(sourceId)) map.removeSource(sourceId);
+      }
+    }
+  }, [isMapReady, dataLayerStore]);
+
   useEffect(() => {
     const map = mapRef.current;
     const overlay = overlayRef.current;
@@ -947,8 +1288,39 @@ export function MapPanel({ data = null }: MapPanelProps) {
     if (!isMapReady || !map || !overlay) return;
 
     if (!data) {
-      overlay.setProps({ layers: [] });
-      map.jumpTo({ center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]], zoom: DEFAULT_ZOOM });
+      // No agent data — still show live data layers + corridor line
+      const noDataLayers: unknown[] = [];
+      if (corridorLine) {
+        noDataLayers.push(
+          new GeoJsonLayer({ id: "corridor-route-glow-nd", data: CORRIDOR_ROUTE_GEOJSON, stroked: true, filled: false, getLineColor: [218, 165, 32, 80], getLineWidth: 12, lineWidthMinPixels: 6 }),
+          new GeoJsonLayer({ id: "corridor-route-line-nd", data: CORRIDOR_ROUTE_GEOJSON, stroked: true, filled: false, getLineColor: [218, 165, 32, 220], getLineWidth: 5, lineWidthMinPixels: 3, pickable: true }),
+          new ScatterplotLayer({
+            id: "corridor-nodes-nd",
+            data: CORRIDOR_NODES.map((n) => ({ position: n.coordinates, popupHtml: `<strong>${n.name}</strong><br/>${n.country}` })),
+            getPosition: (d: { position: [number, number] }) => d.position,
+            getFillColor: [218, 165, 32, 220], getLineColor: [255, 255, 255, 220],
+            getRadius: 5000, radiusMinPixels: 5, radiusMaxPixels: 10, stroked: true, lineWidthMinPixels: 2, pickable: true,
+          }),
+        );
+      }
+      overlay.setProps({
+        layers: [...noDataLayers, ...dataDeckLayers] as never[],
+        getTooltip: ({ object }: { object?: OverlayObject }) => {
+          const hoverHtml = getHoverHtmlFromObject(object);
+          if (!hoverHtml) return null;
+          return {
+            html: hoverHtml,
+            style: {
+              backgroundColor: "#ffffff", color: "#111827", borderRadius: "10px",
+              border: "1px solid #e5e7eb", padding: "8px 10px",
+              boxShadow: "0 10px 20px rgba(0, 0, 0, 0.12)", maxWidth: "280px",
+            },
+          };
+        },
+      });
+      if (dataDeckLayers.length === 0) {
+        map.jumpTo({ center: [DEFAULT_CENTER[1], DEFAULT_CENTER[0]], zoom: DEFAULT_ZOOM });
+      }
       return;
     }
 
@@ -976,19 +1348,113 @@ export function MapPanel({ data = null }: MapPanelProps) {
         new GeoJsonLayer({
           id: "corridor-polygon",
           data: {
-            type: "Feature",
-            properties: { popupHtml: corridorPopupLines.join("<br/>") },
-            geometry: {
-              type: "Polygon",
-              coordinates: [data.polygon.map(([lat, lng]) => [lng, lat])],
-            },
-          } as Feature<Polygon, { popupHtml: string }>,
+            type: "FeatureCollection",
+            features: [
+              {
+                type: "Feature",
+                properties: { popupHtml: corridorPopupLines.join("<br/>") },
+                geometry: {
+                  type: "Polygon",
+                  coordinates: [data.polygon.map(([lat, lng]) => [lng, lat])],
+                },
+              },
+            ],
+          },
           pickable: true,
           stroked: true,
           filled: true,
           getLineColor: [37, 99, 235, 220],
           getFillColor: [59, 130, 246, 45],
           lineWidthMinPixels: 2,
+        })
+      );
+    }
+
+    // Geocoded location points (from geocode_location tool)
+    const geocodePoints = (data.points ?? []).filter((point) => !point.anchorId);
+    if (geocodePoints.length > 0) {
+      const geocodeData = geocodePoints.map((point) => {
+        const popupLines = [
+          `<strong>${escapeHtml(point.label)}</strong>`,
+          `<strong>Lat</strong>: ${point.latitude.toFixed(4)}`,
+          `<strong>Lon</strong>: ${point.longitude.toFixed(4)}`,
+        ];
+        if (point.confidence !== undefined) {
+          popupLines.push(`<strong>Confidence</strong>: ${(point.confidence * 100).toFixed(0)}%`);
+        }
+        boundsPoints.push([point.latitude, point.longitude]);
+        return {
+          position: [point.longitude, point.latitude] as [number, number],
+          popupHtml: popupLines.join("<br/>"),
+        };
+      });
+
+      layers.push(
+        new ScatterplotLayer({
+          id: "geocode-points",
+          data: geocodeData,
+          pickable: true,
+          filled: true,
+          stroked: true,
+          getPosition: (d: { position: [number, number] }) => d.position,
+          getRadius: 1200,
+          radiusMinPixels: 8,
+          radiusMaxPixels: 20,
+          getFillColor: [220, 38, 38, 230],
+          getLineColor: [255, 255, 255, 255],
+          lineWidthMinPixels: 2,
+        })
+      );
+    }
+
+    // Anchor load points (from scan_anchor_loads tool)
+    const anchorPoints = (data.points ?? []).filter((point) => Boolean(point.anchorId));
+    if (anchorPoints.length > 0) {
+      const sectorColors: Record<string, [number, number, number, number]> = {
+        Energy: [234, 88, 12, 230],      // orange
+        Mining: [124, 58, 237, 230],      // purple
+        Agriculture: [22, 163, 74, 230],  // green
+        "Industrial/Ports": [37, 99, 235, 230], // blue
+        Digital: [6, 182, 212, 230],      // cyan
+      };
+      const defaultSectorColor: [number, number, number, number] = [100, 116, 139, 230]; // slate
+
+      const anchorData = anchorPoints.map((point) => {
+        const popupHtml = [
+          `<strong>${escapeHtml(point.label)}</strong>`,
+          point.sector ? `<strong>Sector</strong>: ${escapeHtml(point.sector)}` : null,
+          point.subSector ? `<strong>Sub-sector</strong>: ${escapeHtml(point.subSector)}` : null,
+          point.country ? `<strong>Country</strong>: ${escapeHtml(point.country)}` : null,
+          point.operator ? `<strong>Operator</strong>: ${escapeHtml(point.operator)}` : null,
+          point.identityConfidence
+            ? `<strong>Confidence</strong>: ${escapeHtml(point.identityConfidence)}`
+            : null,
+        ]
+          .filter((line): line is string => line !== null)
+          .join("<br/>");
+
+        boundsPoints.push([point.latitude, point.longitude]);
+        return {
+          position: [point.longitude, point.latitude] as [number, number],
+          fillColor: sectorColors[point.sector ?? ""] ?? defaultSectorColor,
+          popupHtml,
+        };
+      });
+
+      layers.push(
+        new ScatterplotLayer({
+          id: "anchor-load-points",
+          data: anchorData,
+          pickable: true,
+          filled: true,
+          stroked: true,
+          getPosition: (d: { position: [number, number] }) => d.position,
+          getRadius: 900,
+          radiusMinPixels: 6,
+          radiusMaxPixels: 16,
+          getFillColor: (d: { fillColor: [number, number, number, number] }) => d.fillColor,
+          getLineColor: [255, 255, 255, 200],
+          lineWidthMinPixels: 1.5,
         })
       );
     }
@@ -1269,7 +1735,10 @@ export function MapPanel({ data = null }: MapPanelProps) {
     if (layerVisibility.opportunities && filteredOpportunities.length > 0) {
       const opportunityData = filteredOpportunities
         .map((opportunity) => {
-          const coords = opportunityCoordinatesByAnchorId.get(opportunity.anchorId);
+          const coords = opportunityCoordinatesByAnchorId.get(opportunity.anchorId)
+            ?? (opportunity.latitude !== undefined && opportunity.longitude !== undefined
+              ? { latitude: opportunity.latitude, longitude: opportunity.longitude }
+              : null);
           if (!coords) return null;
           boundsPoints.push([coords.latitude, coords.longitude]);
 
@@ -1473,8 +1942,67 @@ export function MapPanel({ data = null }: MapPanelProps) {
       }
     }
 
+    // Corridor alignment line (gold highway route)
+    const corridorLayers: unknown[] = [];
+    if (corridorLine) {
+      // Glow/halo layer
+      corridorLayers.push(
+        new GeoJsonLayer({
+          id: "corridor-route-glow",
+          data: CORRIDOR_ROUTE_GEOJSON,
+          stroked: true,
+          filled: false,
+          getLineColor: [218, 165, 32, 80],
+          getLineWidth: 12,
+          lineWidthMinPixels: 6,
+          lineCapRounded: true,
+          lineJointRounded: true,
+        }),
+      );
+      // Main line
+      corridorLayers.push(
+        new GeoJsonLayer({
+          id: "corridor-route-line",
+          data: CORRIDOR_ROUTE_GEOJSON,
+          stroked: true,
+          filled: false,
+          getLineColor: [218, 165, 32, 220],
+          getLineWidth: 5,
+          lineWidthMinPixels: 3,
+          lineCapRounded: true,
+          lineJointRounded: true,
+          pickable: true,
+        }),
+      );
+      // Corridor node markers
+      corridorLayers.push(
+        new ScatterplotLayer({
+          id: "corridor-nodes",
+          data: CORRIDOR_NODES.map((n) => ({
+            position: n.coordinates,
+            name: n.name,
+            country: n.country,
+            type: n.type,
+            popupHtml: `<strong>${n.name}</strong><br/>${n.country} · ${n.type}`,
+          })),
+          getPosition: (d: { position: [number, number] }) => d.position,
+          getFillColor: [218, 165, 32, 220],
+          getLineColor: [255, 255, 255, 220],
+          getRadius: 5000,
+          radiusMinPixels: 5,
+          radiusMaxPixels: 10,
+          stroked: true,
+          lineWidthMinPixels: 2,
+          pickable: true,
+        }),
+      );
+    }
+
+    // Append corridor + data layers + agent overlays
+    const allLayers = [...corridorLayers, ...dataDeckLayers, ...layers];
+
     overlay.setProps({
-      layers: layers as never[],
+      layers: allLayers as never[],
       getTooltip: ({ object }: { object?: OverlayObject }) => {
         const hoverHtml = getHoverHtmlFromObject(object);
         if (!hoverHtml) return null;
@@ -1506,6 +2034,15 @@ export function MapPanel({ data = null }: MapPanelProps) {
         maxLng = Math.max(maxLng, lng);
       }
 
+      // Pad single-point bounds so the map doesn't zoom to max
+      if (minLat === maxLat && minLng === maxLng) {
+        const PAD = 0.5;
+        minLat -= PAD;
+        maxLat += PAD;
+        minLng -= PAD;
+        maxLng += PAD;
+      }
+
       map.fitBounds(
         [
           [minLng, minLat],
@@ -1526,6 +2063,8 @@ export function MapPanel({ data = null }: MapPanelProps) {
     isMapReady,
     layerVisibility,
     opportunityCoordinatesByAnchorId,
+    dataDeckLayers,
+    corridorLine,
   ]);
 
   useEffect(() => {
@@ -1534,7 +2073,7 @@ export function MapPanel({ data = null }: MapPanelProps) {
     if (!isMapReady || !map || !overlay) return;
 
     const picker = overlay as unknown as OverlayPicker;
-    const handleMapClick = (event: maplibregl.MapMouseEvent) => {
+    const handleMapClick = async (event: maplibregl.MapMouseEvent) => {
       const picked = picker.pickObject({
         x: event.point.x,
         y: event.point.y,
@@ -1542,30 +2081,70 @@ export function MapPanel({ data = null }: MapPanelProps) {
       });
       const popupHtml = getPopupHtmlFromObject(picked?.object);
 
-      if (!popupHtml) {
+      if (popupHtml) {
+        popupRef.current?.remove();
+        popupRef.current = new maplibregl.Popup({
+          closeButton: true, closeOnClick: true, maxWidth: "360px",
+        })
+          .setLngLat([event.lngLat.lng, event.lngLat.lat])
+          .setHTML(`<div style="font-size:12px;line-height:1.45;color:#111827;max-height:320px;overflow:auto;">${popupHtml}</div>`)
+          .addTo(map);
+        return;
+      }
+
+      // No deck.gl object picked — check if raster layers are active and sample the point
+      const hasRaster = DATA_LAYERS.some((l) => l.geometryType === "raster" && dataLayerStoreRef.current[l.id]?.active);
+      if (!hasRaster) {
         popupRef.current?.remove();
         popupRef.current = null;
         return;
       }
 
+      // Show loading popup
       popupRef.current?.remove();
-      popupRef.current = new maplibregl.Popup({
-        closeButton: true,
-        closeOnClick: true,
-        maxWidth: "360px",
-      })
+      const loadingPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: "360px" })
         .setLngLat([event.lngLat.lng, event.lngLat.lat])
-        .setHTML(
-          `<div style="font-size:12px;line-height:1.45;color:#111827;max-height:320px;overflow:auto;">${popupHtml}</div>`
-        )
+        .setHTML(`<div style="font-size:12px;color:#111827;padding:4px;">Sampling location...</div>`)
         .addTo(map);
+      popupRef.current = loadingPopup;
+
+      try {
+        const r = await fetch(`/api/corridor/sample?lon=${event.lngLat.lng}&lat=${event.lngLat.lat}`);
+        if (!r.ok) throw new Error("Failed");
+        const d = await r.json();
+        const lines: string[] = [];
+        if (d.landcover_name) lines.push(`<strong>Land Cover</strong>: ${d.landcover_name}`);
+        if (d.elevation != null) lines.push(`<strong>Elevation</strong>: ${d.elevation}m`);
+        if (d.population != null) lines.push(`<strong>Population Density</strong>: ${Number(d.population).toFixed(1)} /km²`);
+        if (d.slope != null) lines.push(`<strong>Slope</strong>: ${d.slope}°`);
+
+        // Agriculture info for cropland
+        if (d.agriculture) {
+          const ag = d.agriculture;
+          lines.push(`<br/><strong>Agricultural Area</strong> (${ag.country})`);
+          lines.push(`<em style="color:#666;font-size:11px;">${ag.note}</em>`);
+          for (const crop of ag.top_crops ?? []) {
+            const prod = crop.production_tonnes >= 1e6
+              ? `${(crop.production_tonnes / 1e6).toFixed(1)}M`
+              : crop.production_tonnes >= 1e3
+              ? `${(crop.production_tonnes / 1e3).toFixed(0)}K`
+              : String(crop.production_tonnes);
+            lines.push(`• <strong>${crop.crop}</strong>: ${prod} tonnes, yield ${crop.yield_kg_ha} kg/ha`);
+          }
+        }
+
+        if (lines.length === 0) lines.push("No data at this location");
+        loadingPopup.setHTML(`<div style="font-size:12px;line-height:1.5;color:#111827;max-height:320px;overflow:auto;">${lines.join("<br/>")}</div>`);
+      } catch {
+        loadingPopup.setHTML(`<div style="font-size:12px;color:#999;">Could not sample this location</div>`);
+      }
     };
 
     map.on("click", handleMapClick);
     return () => {
       map.off("click", handleMapClick);
     };
-  }, [isMapReady]);
+  }, [isMapReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const setInfrastructureFilterValue = (value: InfrastructureCategoryFilter["value"]) => {
     setInfrastructureFilter({ value });
@@ -1778,418 +2357,262 @@ export function MapPanel({ data = null }: MapPanelProps) {
     );
   }, [layerVisibility]);
 
-  return (
-    <div className="h-full w-full bg-muted/20">
-      <div
-        ref={panelFrameRef}
-        className="relative h-full w-full overflow-hidden bg-background shadow-sm"
-      >
-        <div ref={mapContainerRef} className="h-full w-full" />
-        {!isMapReady && (
-          <div className="absolute inset-0 flex items-center justify-center bg-background/90 text-sm text-muted-foreground">
-            Loading map...
-          </div>
-        )}
-        <div className="pointer-events-none absolute inset-0 z-[510]">
-          <div
-            ref={filterPanelRef}
-            className="pointer-events-auto absolute min-w-[240px] rounded-xl border border-border bg-background/95 p-3 text-xs shadow-lg"
-            style={{
-              left: filterPanelPosition?.x ?? FILTER_PANEL_PADDING,
-              top: filterPanelPosition?.y ?? FILTER_PANEL_PADDING,
-            }}
-          >
-            <div
-              className="-mx-3 -mt-3 mb-2 cursor-move select-none border-b border-border bg-muted/40 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground touch-none"
-              onPointerDown={handleFilterDragStart}
-              onPointerMove={handleFilterDragMove}
-              onPointerUp={handleFilterDragEnd}
-              onPointerCancel={handleFilterDragEnd}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span>Drag filters</span>
-                <button
-                  type="button"
-                  className="inline-flex h-6 w-6 items-center justify-center rounded bg-transparent text-foreground hover:bg-transparent"
-                  aria-expanded={!isFilterPanelMinimized}
-                  aria-label={isFilterPanelMinimized ? "Expand filters" : "Minimize filters"}
-                  onPointerDown={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                  }}
-                  onPointerUp={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                  }}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setIsFilterPanelMinimized((previous) => !previous);
-                  }}
-                >
-                  {isFilterPanelMinimized ? (
-                    <Maximize2 className="size-3" />
-                  ) : (
-                    <Minimize2 className="size-3" />
-                  )}
-                </button>
-              </div>
+  // Count active data layers for stats
+  const activeLayerStats = useMemo(() => {
+    let totalFeatures = 0;
+    let activeCount = 0;
+    for (const cfg of DATA_LAYERS) {
+      const state = dataLayerStore[cfg.id];
+      if (state?.active) {
+        activeCount++;
+        totalFeatures += state.featureCount;
+      }
+    }
+    return { activeCount, totalFeatures };
+  }, [dataLayerStore]);
+
+  // Dashboard mode: render only the sidebar, no map
+  if (dataLayerSidebarOnly) {
+    return (
+      <div className="flex h-full w-full flex-col bg-background text-xs">
+        {/* Header */}
+        <div className="border-b border-border px-4 py-3">
+          <h2 className="text-sm font-semibold">Data Layers</h2>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">Lagos — Abidjan Economic Corridor</p>
+        </div>
+        {/* Scrollable layer toggles */}
+        <div className="flex-1 overflow-y-auto px-4 py-3">
+          {data && (
+            <div className="mb-4">
+              <Collapsible defaultOpen>
+                <CollapsibleTrigger asChild>
+                  <button type="button" className="flex w-full items-center justify-between py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    <span>Analysis Overlays</span><ChevronDown className="size-3" />
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="mt-1 space-y-1">
+                  {LAYER_TOGGLE_OPTIONS.map((option) => {
+                    const isSelected = layerVisibility[option.key];
+                    return (
+                      <label key={option.key} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition hover:bg-muted/60">
+                        <input type="checkbox" className="size-3.5 rounded border-border accent-primary" checked={isSelected}
+                          onChange={(e) => setLayerVisibility((prev) => ({ ...prev, [option.key]: e.target.checked }))} />
+                        <span className="text-[12px]">{option.label}</span>
+                      </label>
+                    );
+                  })}
+                </CollapsibleContent>
+              </Collapsible>
             </div>
-            {!isFilterPanelMinimized && (
-              <>
-                <Collapsible
-                  open={filterSectionOpen.infrastructure}
-                  onOpenChange={(isOpen) =>
-                    setFilterSectionOpen((previous) => ({ ...previous, infrastructure: isOpen }))
-                  }
-                >
+          )}
+          {DATA_LAYER_GROUPS.map((grp) => {
+            const groupLayers = DATA_LAYERS.filter((l) => l.group === grp.key);
+            const anyActive = groupLayers.some((l) => dataLayerStore[l.id]?.active);
+            return (
+              <div key={grp.key} className="mb-3">
+                <Collapsible defaultOpen={anyActive}>
                   <CollapsibleTrigger asChild>
-                    <button
-                      type="button"
-                      className="flex w-full items-center justify-between py-1 text-left text-sm font-semibold"
-                    >
-                      <span>Infrastructure Filter</span>
-                      {filterSectionOpen.infrastructure ? (
-                        <ChevronDown className="size-3.5" />
-                      ) : (
-                        <ChevronRight className="size-3.5" />
-                      )}
+                    <button type="button" className="flex w-full items-center justify-between py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      <span>{grp.label}</span><ChevronDown className="size-3" />
                     </button>
                   </CollapsibleTrigger>
-                  <CollapsibleContent className="pt-1">
-                    <label className="flex items-center gap-2 py-1">
-                      <input
-                        type="radio"
-                        name="infrastructure-filter"
-                        checked={infrastructureFilter.value === "all"}
-                        onChange={() => setInfrastructureFilterValue("all")}
-                      />
-                      <span>All</span>
-                    </label>
-                    <label className="flex items-center gap-2 py-1">
-                      <input
-                        type="radio"
-                        name="infrastructure-filter"
-                        checked={infrastructureFilter.value === "anchor_load"}
-                        onChange={() => setInfrastructureFilterValue("anchor_load")}
-                      />
-                      <span>Anchor Load</span>
-                    </label>
-                    <label className="flex items-center gap-2 py-1">
-                      <input
-                        type="radio"
-                        name="infrastructure-filter"
-                        checked={infrastructureFilter.value === "generation"}
-                        onChange={() => setInfrastructureFilterValue("generation")}
-                      />
-                      <span>Power Generation</span>
-                    </label>
-                    <label className="flex items-center gap-2 py-1">
-                      <input
-                        type="radio"
-                        name="infrastructure-filter"
-                        checked={infrastructureFilter.value === "road_safety"}
-                        onChange={() => setInfrastructureFilterValue("road_safety")}
-                      />
-                      <span>Road Safety Hazards</span>
-                    </label>
+                  <CollapsibleContent className="mt-1 space-y-0.5">
+                    {groupLayers.map((layer) => {
+                      const state = dataLayerStore[layer.id];
+                      const isActive = state?.active ?? false;
+                      const isLoading = state?.loading ?? false;
+                      const count = state?.featureCount ?? 0;
+                      return (
+                        <button key={layer.id} type="button" onClick={() => toggleDataLayer(layer.id)}
+                          className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition ${isActive ? "bg-muted/80" : "hover:bg-muted/40"}`}>
+                          {isLoading ? <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" /> : (
+                            <span className={`inline-block size-3 shrink-0 rounded-sm border ${isActive ? "border-transparent" : "border-border"}`}
+                              style={isActive ? { backgroundColor: `rgb(${layer.color[0]},${layer.color[1]},${layer.color[2]})` } : undefined} />
+                          )}
+                          <span className="flex-1 text-[12px]">{layer.label}</span>
+                          {isActive && count > 0 && <span className="text-[10px] tabular-nums text-muted-foreground">{count.toLocaleString()}</span>}
+                        </button>
+                      );
+                    })}
                   </CollapsibleContent>
                 </Collapsible>
-                <div className="mt-3 border-t border-border pt-3">
-                  <Collapsible
-                    open={filterSectionOpen.environment}
-                    onOpenChange={(isOpen) =>
-                      setFilterSectionOpen((previous) => ({ ...previous, environment: isOpen }))
-                    }
-                  >
-                    <CollapsibleTrigger asChild>
-                      <button
-                        type="button"
-                        className="flex w-full items-center justify-between py-1 text-left text-sm font-semibold"
-                      >
-                        <span>Environment Filter</span>
-                        {filterSectionOpen.environment ? (
-                          <ChevronDown className="size-3.5" />
-                        ) : (
-                          <ChevronRight className="size-3.5" />
-                        )}
-                      </button>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className="pt-1">
-                      <label className="flex items-center gap-2 py-1">
-                        <input
-                          type="radio"
-                          name="environment-filter"
-                          checked={constraintFilter.value === "all"}
-                          onChange={() => setConstraintFilter({ value: "all" })}
-                        />
-                        <span>All</span>
-                      </label>
-                      <label className="flex items-center gap-2 py-1">
-                        <input
-                          type="radio"
-                          name="environment-filter"
-                          checked={constraintFilter.value === "environmental"}
-                          onChange={() => setConstraintFilter({ value: "environmental" })}
-                        />
-                        <span>Environmental</span>
-                      </label>
-                      <label className="flex items-center gap-2 py-1">
-                        <input
-                          type="radio"
-                          name="environment-filter"
-                          checked={constraintFilter.value === "human_safety"}
-                          onChange={() => setConstraintFilter({ value: "human_safety" })}
-                        />
-                        <span>Human Safety</span>
-                      </label>
-                      <p className="mt-2 text-[11px] text-muted-foreground">
-                        Showing {filteredNoGoZones.length} of {data?.noGoZones?.length ?? 0} zones
-                      </p>
-                    </CollapsibleContent>
-                  </Collapsible>
+              </div>
+            );
+          })}
+          {legendGroups.length > 0 && (
+            <div className="mt-2 border-t border-border pt-3">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Legend</div>
+              {legendGroups.map((group) => (
+                <div key={group.groupLabel} className="mb-2 last:mb-0">
+                  <div className="mb-1 text-[10px] font-medium text-muted-foreground">{group.groupLabel}</div>
+                  {group.entries.map((entry, i) => (
+                    <div key={`${entry.label}-${i}`} className="flex items-center gap-2 py-[2px]">
+                      <span className="inline-block size-2.5 shrink-0 rounded-sm" style={{ backgroundColor: `rgb(${entry.color[0]},${entry.color[1]},${entry.color[2]})` }} />
+                      <span className="truncate text-[11px]">{entry.label}</span>
+                    </div>
+                  ))}
                 </div>
-                <div className="mt-3 border-t border-border pt-3">
-                  <Collapsible
-                    open={filterSectionOpen.economicGaps}
-                    onOpenChange={(isOpen) =>
-                      setFilterSectionOpen((previous) => ({ ...previous, economicGaps: isOpen }))
-                    }
-                  >
-                    <CollapsibleTrigger asChild>
-                      <button
-                        type="button"
-                        className="flex w-full items-center justify-between py-1 text-left text-sm font-semibold"
-                      >
-                        <span>Economic Gap Filter</span>
-                        {filterSectionOpen.economicGaps ? (
-                          <ChevronDown className="size-3.5" />
-                        ) : (
-                          <ChevronRight className="size-3.5" />
-                        )}
-                      </button>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className="pt-1">
-                      <label className="mb-2 block">
-                        <span className="mb-1 block text-[11px] text-muted-foreground">Type</span>
-                        <select
-                          className="w-full rounded border border-border bg-background px-2 py-1"
-                          value={gapFilter.type}
-                          onChange={(event) =>
-                            setGapFilter((previous) => ({
-                              ...previous,
-                              type: event.target.value as GapFilter["type"],
-                            }))
-                          }
-                        >
-                          <option value="all">All types</option>
-                          <option value="Transmission Gap">Transmission Gap</option>
-                          <option value="Suppressed Demand Gap">Suppressed Demand Gap</option>
-                          <option value="Catalytic Gap">Catalytic Gap</option>
-                        </select>
-                      </label>
-                      <label className="mb-2 block">
-                        <span className="mb-1 block text-[11px] text-muted-foreground">Severity</span>
-                        <select
-                          className="w-full rounded border border-border bg-background px-2 py-1"
-                          value={gapFilter.severity}
-                          onChange={(event) =>
-                            setGapFilter((previous) => ({
-                              ...previous,
-                              severity: event.target.value as GapFilter["severity"],
-                            }))
-                          }
-                        >
-                          <option value="all">All severities</option>
-                          <option value="Critical">Critical</option>
-                          <option value="High">High</option>
-                          <option value="Medium">Medium</option>
-                        </select>
-                      </label>
-                      <label className="mb-2 block">
-                        <span className="mb-1 block text-[11px] text-muted-foreground">Phase</span>
-                        <select
-                          className="w-full rounded border border-border bg-background px-2 py-1"
-                          value={gapFilter.phase}
-                          onChange={(event) =>
-                            setGapFilter((previous) => ({
-                              ...previous,
-                              phase: event.target.value as GapFilter["phase"],
-                            }))
-                          }
-                        >
-                          <option value="all">All phases</option>
-                          <option value="Phase 1">Phase 1</option>
-                          <option value="Phase 2">Phase 2</option>
-                          <option value="Phase 3">Phase 3</option>
-                        </select>
-                      </label>
-                      <label className="flex items-center gap-2 py-1">
-                        <input
-                          type="checkbox"
-                          checked={gapFilter.crossBorderOnly}
-                          onChange={(event) =>
-                            setGapFilter((previous) => ({
-                              ...previous,
-                              crossBorderOnly: event.target.checked,
-                            }))
-                          }
-                        />
-                        <span>Cross-border only</span>
-                      </label>
-                      <p className="mt-2 text-[11px] text-muted-foreground">
-                        Showing {filteredEconomicGaps.length} of {data?.economicGaps?.length ?? 0} gaps
-                      </p>
-                    </CollapsibleContent>
-                  </Collapsible>
-                </div>
-                <div className="mt-3 border-t border-border pt-3">
-                  <Collapsible
-                    open={filterSectionOpen.opportunities}
-                    onOpenChange={(isOpen) =>
-                      setFilterSectionOpen((previous) => ({ ...previous, opportunities: isOpen }))
-                    }
-                  >
-                    <CollapsibleTrigger asChild>
-                      <button
-                        type="button"
-                        className="flex w-full items-center justify-between py-1 text-left text-sm font-semibold"
-                      >
-                        <span>Opportunity Filter</span>
-                        {filterSectionOpen.opportunities ? (
-                          <ChevronDown className="size-3.5" />
-                        ) : (
-                          <ChevronRight className="size-3.5" />
-                        )}
-                      </button>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className="pt-1">
-                      <label className="mb-2 block">
-                        <span className="mb-1 block text-[11px] text-muted-foreground">Phase</span>
-                        <select
-                          className="w-full rounded border border-border bg-background px-2 py-1"
-                          value={opportunityFilter.phase}
-                          onChange={(event) =>
-                            setOpportunityFilter((previous) => ({
-                              ...previous,
-                              phase: event.target.value as OpportunityFilter["phase"],
-                            }))
-                          }
-                        >
-                          <option value="all">All phases</option>
-                          <option value="Phase 1">Phase 1</option>
-                          <option value="Phase 2">Phase 2</option>
-                          <option value="Phase 3">Phase 3</option>
-                        </select>
-                      </label>
-                      <label className="mb-1 block">
-                        <span className="mb-1 block text-[11px] text-muted-foreground">Top Ranked</span>
-                        <select
-                          className="w-full rounded border border-border bg-background px-2 py-1"
-                          value={opportunityFilter.topN}
-                          onChange={(event) =>
-                            setOpportunityFilter((previous) => ({
-                              ...previous,
-                              topN: Number(event.target.value) as OpportunityFilter["topN"],
-                            }))
-                          }
-                        >
-                          <option value={5}>Top 5</option>
-                          <option value={10}>Top 10</option>
-                          <option value={15}>Top 15</option>
-                          <option value={24}>Top 24</option>
-                        </select>
-                      </label>
-                      <p className="mt-2 text-[11px] text-muted-foreground">
-                        Showing {filteredOpportunities.length} of{" "}
-                        {data?.prioritizedOpportunities?.length ?? 0} opportunities
-                      </p>
-                    </CollapsibleContent>
-                  </Collapsible>
-                </div>
-              </>
-            )}
+              ))}
+            </div>
+          )}
+        </div>
+        {/* Stats footer */}
+        <div className="border-t border-border px-4 py-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div><div className="text-[10px] text-muted-foreground">Active Layers</div><div className="text-lg font-semibold tabular-nums">{activeLayerStats.activeCount}</div></div>
+            <div><div className="text-[10px] text-muted-foreground">Total Features</div><div className="text-lg font-semibold tabular-nums">{activeLayerStats.totalFeatures.toLocaleString()}</div></div>
           </div>
         </div>
-        <div className="pointer-events-none absolute inset-0 z-[500]">
-          <div
-            ref={layerTogglePanelRef}
-            className="pointer-events-auto absolute w-fit max-w-[calc(100%-1rem)] rounded-2xl border border-white/60 bg-background/90 p-2 shadow-xl backdrop-blur-md"
-            style={{
-              left: layerTogglePanelPosition?.x ?? FILTER_PANEL_PADDING,
-              top: layerTogglePanelPosition?.y ?? FILTER_PANEL_PADDING,
-            }}
-          >
-            <div
-              className="-mx-2 -mt-2 mb-2 flex cursor-move select-none items-center justify-between rounded-t-2xl border-b border-border/60 bg-muted/35 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground touch-none"
-              onPointerDown={handleLayerToggleDragStart}
-              onPointerMove={handleLayerToggleDragMove}
-              onPointerUp={handleLayerToggleDragEnd}
-              onPointerCancel={handleLayerToggleDragEnd}
-            >
-              <span>Drag layers</span>
-              <button
-                type="button"
-                className="inline-flex h-6 w-6 items-center justify-center rounded bg-transparent text-foreground hover:bg-transparent"
-                aria-expanded={!isLayerToggleMinimized}
-                aria-label={isLayerToggleMinimized ? "Expand layers" : "Minimize layers"}
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-                onPointerUp={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setIsLayerToggleMinimized((previous) => !previous);
-                }}
-              >
-                {isLayerToggleMinimized ? (
-                  <Maximize2 className="size-3" />
-                ) : (
-                  <Minimize2 className="size-3" />
-                )}
-              </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full w-full bg-muted/20">
+      {/* ── Fixed left sidebar panel (Felt-style) ── */}
+      {!hideDataLayers && <div className="flex h-full w-[280px] shrink-0 flex-col border-r border-border bg-background text-xs">
+        {/* Header */}
+        <div className="border-b border-border px-4 py-3">
+          <h2 className="text-sm font-semibold">Data Layers</h2>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            Lagos — Abidjan Economic Corridor
+          </p>
+        </div>
+
+        {/* Scrollable content */}
+        <div className="flex-1 overflow-y-auto px-4 py-3">
+          {/* Agent analysis layers (only when agent data present) */}
+          {data && (
+            <div className="mb-4">
+              <Collapsible defaultOpen>
+                <CollapsibleTrigger asChild>
+                  <button type="button" className="flex w-full items-center justify-between py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    <span>Analysis Overlays</span>
+                    <ChevronDown className="size-3" />
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="mt-1 space-y-1">
+                  {LAYER_TOGGLE_OPTIONS.map((option) => {
+                    const isSelected = layerVisibility[option.key];
+                    return (
+                      <label key={option.key} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition hover:bg-muted/60">
+                        <input
+                          type="checkbox"
+                          className="size-3.5 rounded border-border accent-primary"
+                          checked={isSelected}
+                          onChange={(event) =>
+                            setLayerVisibility((previous) => ({ ...previous, [option.key]: event.target.checked }))
+                          }
+                        />
+                        <span className="text-[12px]">{option.label}</span>
+                      </label>
+                    );
+                  })}
+                </CollapsibleContent>
+              </Collapsible>
             </div>
-            {!isLayerToggleMinimized && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                {LAYER_TOGGLE_OPTIONS.map((option) => {
-                  const isSelected = layerVisibility[option.key];
-                  return (
-                    <label
-                      key={option.key}
-                      className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition ${
-                        isSelected
-                          ? "border-primary/40 bg-primary/10 text-foreground"
-                          : "border-border/70 bg-background/80 text-muted-foreground hover:bg-muted/60"
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="sr-only"
-                        checked={isSelected}
-                        onChange={(event) =>
-                          setLayerVisibility((previous) => ({
-                            ...previous,
-                            [option.key]: event.target.checked,
-                          }))
-                        }
-                      />
-                      <span
-                        className={`h-1.5 w-1.5 rounded-full ${
-                          isSelected ? "bg-primary" : "bg-muted-foreground/60"
-                        }`}
-                      />
-                      <span>{option.label}</span>
-                    </label>
-                  );
-                })}
+          )}
+
+          {/* Live data layers grouped */}
+          {DATA_LAYER_GROUPS.map((grp) => {
+            const groupLayers = DATA_LAYERS.filter((l) => l.group === grp.key);
+            const anyActive = groupLayers.some((l) => dataLayerStore[l.id]?.active);
+            return (
+              <div key={grp.key} className="mb-3">
+                <Collapsible defaultOpen={anyActive}>
+                  <CollapsibleTrigger asChild>
+                    <button type="button" className="flex w-full items-center justify-between py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      <span>{grp.label}</span>
+                      <ChevronDown className="size-3" />
+                    </button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="mt-1 space-y-0.5">
+                    {groupLayers.map((layer) => {
+                      const state = dataLayerStore[layer.id];
+                      const isActive = state?.active ?? false;
+                      const isLoading = state?.loading ?? false;
+                      const count = state?.featureCount ?? 0;
+                      return (
+                        <button
+                          key={layer.id}
+                          type="button"
+                          onClick={() => toggleDataLayer(layer.id)}
+                          className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition ${
+                            isActive ? "bg-muted/80" : "hover:bg-muted/40"
+                          }`}
+                        >
+                          {isLoading ? (
+                            <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+                          ) : (
+                            <span
+                              className={`inline-block size-3 shrink-0 rounded-sm border ${isActive ? "border-transparent" : "border-border"}`}
+                              style={isActive ? { backgroundColor: `rgb(${layer.color[0]},${layer.color[1]},${layer.color[2]})` } : undefined}
+                            />
+                          )}
+                          <span className="flex-1 text-[12px]">{layer.label}</span>
+                          {isActive && count > 0 && (
+                            <span className="text-[10px] tabular-nums text-muted-foreground">{count.toLocaleString()}</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </CollapsibleContent>
+                </Collapsible>
               </div>
-            )}
+            );
+          })}
+
+          {/* Legend (inline, below layers) */}
+          {legendGroups.length > 0 && (
+            <div className="mt-2 border-t border-border pt-3">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Legend
+              </div>
+              {legendGroups.map((group) => (
+                <div key={group.groupLabel} className="mb-2 last:mb-0">
+                  <div className="mb-1 text-[10px] font-medium text-muted-foreground">{group.groupLabel}</div>
+                  {group.entries.map((entry, i) => (
+                    <div key={`${entry.label}-${i}`} className="flex items-center gap-2 py-[2px]">
+                      <span
+                        className="inline-block size-2.5 shrink-0 rounded-sm"
+                        style={{ backgroundColor: `rgb(${entry.color[0]},${entry.color[1]},${entry.color[2]})` }}
+                      />
+                      <span className="truncate text-[11px]">{entry.label}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Stats footer */}
+        <div className="border-t border-border px-4 py-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-[10px] text-muted-foreground">Active Layers</div>
+              <div className="text-lg font-semibold tabular-nums">{activeLayerStats.activeCount}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-muted-foreground">Total Features</div>
+              <div className="text-lg font-semibold tabular-nums">{activeLayerStats.totalFeatures.toLocaleString()}</div>
+            </div>
           </div>
+        </div>
+      </div>}
+
+      {/* ── Map ── */}
+      <div className="relative flex-1">
+        <div
+          ref={panelFrameRef}
+          className="relative h-full w-full overflow-hidden bg-background shadow-sm"
+        >
+          <div ref={mapContainerRef} className="h-full w-full" />
+          {!isMapReady && (
+            <div className="absolute inset-0 flex items-center justify-center bg-background/90 text-sm text-muted-foreground">
+              Loading map...
+            </div>
+          )}
         </div>
       </div>
     </div>

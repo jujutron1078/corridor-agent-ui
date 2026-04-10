@@ -3,6 +3,7 @@
 import { Suspense } from "react";
 import type { CSSProperties } from "react";
 import { useCallback, useSyncExternalStore } from "react";
+import { useSearchParams } from "next/navigation";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { ChatWorkspace } from "@/components/chat-workspace";
@@ -32,6 +33,9 @@ function getSplitViewSnapshot() {
 }
 
 export function ChatPageShell() {
+  const searchParams = useSearchParams();
+  const isDashboard = searchParams.get("view") === "dashboard";
+
   const isSplitView = useSyncExternalStore(
     subscribeLayoutStorage,
     getSplitViewSnapshot,
@@ -45,7 +49,7 @@ export function ChatPageShell() {
   }, []);
 
   return (
-    <SidebarProvider className="h-svh" style={sidebarStyle}>
+    <SidebarProvider className="h-svh" style={sidebarStyle} defaultOpen={!isDashboard}>
       <AssistantProvider>
         <Suspense fallback={null}>
           <AppSidebar variant="sidebar" />

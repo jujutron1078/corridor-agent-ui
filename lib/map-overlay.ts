@@ -76,6 +76,8 @@ export type PrioritizedOpportunity = {
   subSector?: string;
   country?: string;
   phase?: string;
+  latitude?: number;
+  longitude?: number;
   gapsAddressed: string[];
   compositeScore?: number;
   bankabilityTier?: string;
@@ -594,6 +596,79 @@ function parseAnchorLoadPoints(payload: UnknownRecord): MapPoint[] {
         registrySource: toString(item.registry_source),
         identityConfidence: toString(item.identity_confidence),
         resolutionNote: toString(item.resolution_note),
+      };
+    })
+    .filter((point): point is MapPoint => point !== null);
+}
+
+/**
+ * Parse GeoJSON FeatureCollection results from query_corridor_data into MapPoints.
+ * Handles OSM social facilities, military, infrastructure, etc.
+ */
+function parseGeoJsonFeaturePoints(payload: UnknownRecord): MapPoint[] {
+  // Direct FeatureCollection
+  let features = payload.features;
+
+  // Nested in a wrapper (e.g. { type: "FeatureCollection", features: [...] })
+  if (!Array.isArray(features) && payload.type === "FeatureCollection") {
+    features = payload.features;
+  }
+
+  // Check nested keys for FeatureCollections (e.g. { military: { type: "FeatureCollection", features: [...] } })
+  if (!Array.isArray(features)) {
+    for (const val of Object.values(payload)) {
+      const rec = toRecord(val);
+      if (rec?.type === "FeatureCollection" && Array.isArray(rec.features)) {
+        features = rec.features;
+        break;
+      }
+    }
+  }
+
+  if (!Array.isArray(features)) return [];
+
+  return features
+    .map((feature): MapPoint | null => {
+      const f = toRecord(feature);
+      if (!f) return null;
+
+      const geometry = toRecord(f.geometry);
+      const props = toRecord(f.properties) ?? {};
+
+      let latitude: number | null = null;
+      let longitude: number | null = null;
+
+      if (geometry?.type === "Point" && Array.isArray(geometry.coordinates)) {
+        // GeoJSON is [longitude, latitude]
+        longitude = toNumber(geometry.coordinates[0]);
+        latitude = toNumber(geometry.coordinates[1]);
+      }
+
+      // Fallback to properties
+      if (latitude === null || longitude === null) {
+        latitude = toNumber(props.latitude ?? props.lat);
+        longitude = toNumber(props.longitude ?? props.lon ?? props.lng);
+      }
+
+      if (latitude === null || longitude === null) return null;
+
+      const label =
+        toString(props.name) ??
+        toString(props.Name) ??
+        toString(props.facility_name) ??
+        toString(props.entity_name) ??
+        toString(props.type) ??
+        toString(props.fclass) ??
+        "Feature";
+
+      return {
+        label,
+        latitude,
+        longitude,
+        sector: toString(props.type) ?? toString(props.fclass) ?? undefined,
+        subSector: toString(props.sub_type) ?? toString(props.amenity) ?? undefined,
+        country: toString(props.country) ?? undefined,
+        operator: toString(props.operator) ?? undefined,
       };
     })
     .filter((point): point is MapPoint => point !== null);
@@ -1409,6 +1484,8 @@ function parsePrioritizedOpportunities(
         subSector: toString(item.sub_sector),
         country: toString(item.country),
         phase: toString(item.phase),
+        latitude: toNumber(item.latitude) ?? undefined,
+        longitude: toNumber(item.longitude) ?? undefined,
         gapsAddressed,
         compositeScore: toNumber(item.composite_score) ?? undefined,
         bankabilityTier: toString(item.bankability_tier),
@@ -1536,11 +1613,49 @@ function parseColocationSummary(payload: UnknownRecord): ColocationSummary | nul
   };
 }
 
+/**
+ * Infer tool name from payload structure when LangGraph SDK doesn't provide it.
+ */
+function inferToolName(payload: UnknownRecord): string | undefined {
+  if ("resolved_locations" in payload) return "geocode_location";
+  if ("bounding_polygon_geojson" in payload && !("detections" in payload))
+    return "define_corridor";
+  if ("terrain_segments" in payload) return "terrain_analysis";
+  if (
+    "protected_area_conflicts" in payload ||
+    "wetland_and_water_body_conflicts" in payload ||
+    "human_safety_conflicts" in payload
+  )
+    return "environmental_constraints";
+  if ("detections" in payload) return "infrastructure_detection";
+  if ("route_variants" in payload || "optimized_routes" in payload)
+    return "route_optimization";
+  if ("refined_variants" in payload || "refined_coordinates" in payload || "refined_route_geojson" in payload)
+    return "refine_optimized_routes";
+  if ("anchor_catalog" in payload || "total_anchors_identified" in payload)
+    return "scan_anchor_loads";
+  if ("demand_profiles" in payload || "total_current_mw" in payload)
+    return "calculate_current_demand";
+  if ("bankability_scores" in payload || "corridor_average_score" in payload)
+    return "assess_bankability";
+  if ("trajectories" in payload || "aggregate_trajectory" in payload)
+    return "model_growth_trajectory";
+  if ("gaps_found" in payload || "corridor_gap_summary" in payload)
+    return "economic_gap_analysis";
+  if ("priority_list" in payload || "total_anchors_ranked" in payload)
+    return "prioritize_opportunities";
+  if ("variant_colocation_analysis" in payload || "comparative_summary" in payload)
+    return "quantify_colocation_benefits";
+  return undefined;
+}
+
 function applyOverlayPayload(
   toolName: string | undefined,
   payload: UnknownRecord,
   current: MapOverlayData
 ): MapOverlayData {
+  // Fall back to content-based detection when toolName is missing
+  const resolvedToolName = toolName ?? inferToolName(payload);
   let nextPoints = current.points;
   let nextPolygon = current.polygon;
   let nextCorridorId = current.corridorId;
@@ -1558,11 +1673,11 @@ function applyOverlayPayload(
   let nextOpportunitySummary = current.opportunitySummary;
   let nextColocationSummary = current.colocationSummary;
 
-  if (toolName === "geocode_location") {
+  if (resolvedToolName === "geocode_location") {
     nextPoints = parseGeocodePoints(payload);
   }
 
-  if (toolName === "define_corridor" || toolName === "fetch_geospatial_layers") {
+  if (resolvedToolName === "define_corridor" || resolvedToolName === "fetch_geospatial_layers") {
     const polygon = parsePolygonCoordinates(payload);
     if (polygon.length > 0) {
       nextPolygon = polygon;
@@ -1571,7 +1686,7 @@ function applyOverlayPayload(
       toString(payload.corridor_id) ?? toString(payload.corridorId) ?? nextCorridorId;
   }
 
-  if (toolName === "terrain_analysis") {
+  if (resolvedToolName === "terrain_analysis") {
     nextTerrainAnalysis = parseTerrainAnalysis(payload) ?? nextTerrainAnalysis;
     const noGoZones = parseNoGoZones(payload);
     if (noGoZones.length > 0) {
@@ -1579,9 +1694,7 @@ function applyOverlayPayload(
     }
   }
 
-  if (
-    toolName === "environmental_constraints"
-  ) {
+  if (resolvedToolName === "environmental_constraints") {
     const noGoZones = parseNoGoZones(payload);
     const conflictZones = parseConstraintConflictZones(payload);
     const combined = [...noGoZones, ...conflictZones];
@@ -1590,9 +1703,7 @@ function applyOverlayPayload(
     }
   }
 
-  if (
-    toolName === "infrastructure_detection" 
-  ) {
+  if (resolvedToolName === "infrastructure_detection") {
     const polygon = parsePolygonCoordinates(payload);
     if (polygon.length > 0) {
       nextPolygon = polygon;
@@ -1610,21 +1721,21 @@ function applyOverlayPayload(
     }
   }
 
-  if (toolName === "route_optimization") {
+  if (resolvedToolName === "route_optimization") {
     const routeVariants = parseRouteVariants(payload);
     if (routeVariants.length > 0) {
       nextRouteVariants = routeVariants;
     }
   }
 
-  if (toolName === "refine_optimized_routes") {
+  if (resolvedToolName === "refine_optimized_routes") {
     const refinedVariants = parseRefinedRouteVariants(payload);
     if (refinedVariants.length > 0) {
       nextRouteVariants = refinedVariants;
     }
   }
 
-  if (toolName === "scan_anchor_loads") {
+  if (resolvedToolName === "scan_anchor_loads") {
     const anchorPoints = parseAnchorLoadPoints(payload);
     if (anchorPoints.length > 0) {
       nextPoints = anchorPoints;
@@ -1633,21 +1744,21 @@ function applyOverlayPayload(
       toNumber(payload.total_anchors_identified) ?? anchorPoints.length ?? nextAnchorLoadsCount;
   }
 
-  if (toolName === "calculate_current_demand") {
+  if (resolvedToolName === "calculate_current_demand") {
     const currentDemand = parseCurrentDemandAnalysis(payload, nextPoints);
     if (currentDemand) {
       nextCurrentDemand = currentDemand;
     }
   }
 
-  if (toolName === "assess_bankability") {
+  if (resolvedToolName === "assess_bankability") {
     const bankability = parseBankabilityAnalysis(payload);
     if (bankability) {
       nextBankability = bankability;
     }
   }
 
-  if (toolName === "model_growth_trajectory") {
+  if (resolvedToolName === "model_growth_trajectory") {
     const growthTrajectory = parseGrowthTrajectoryAnalysis(payload);
     if (growthTrajectory) {
       nextGrowthTrajectory = growthTrajectory;
@@ -1655,9 +1766,9 @@ function applyOverlayPayload(
   }
 
   if (
-    toolName === "economic_gap_analysis" ||
-    toolName === "analyze_economic_gaps" ||
-    toolName === "identify_economic_gaps"
+    resolvedToolName === "economic_gap_analysis" ||
+    resolvedToolName === "analyze_economic_gaps" ||
+    resolvedToolName === "identify_economic_gaps"
   ) {
     const economicGapAnalysis = parseEconomicGapAnalysis(payload);
     if (economicGapAnalysis) {
@@ -1666,7 +1777,7 @@ function applyOverlayPayload(
     }
   }
 
-  if (toolName === "prioritize_opportunities") {
+  if (resolvedToolName === "prioritize_opportunities") {
     const opportunityAnalysis = parsePrioritizedOpportunities(payload);
     if (opportunityAnalysis) {
       nextPrioritizedOpportunities = opportunityAnalysis.opportunities;
@@ -1674,7 +1785,7 @@ function applyOverlayPayload(
     }
   }
 
-  if (toolName === "quantify_colocation_benefits") {
+  if (resolvedToolName === "quantify_colocation_benefits") {
     const colocationSummary = parseColocationSummary(payload);
     if (colocationSummary) {
       const previous = nextColocationSummary;
@@ -1701,6 +1812,14 @@ function applyOverlayPayload(
             previousMethodology?.savingsRatePerCategory,
         },
       };
+    }
+  }
+
+  // Handle query_corridor_data results — extract GeoJSON features as map points
+  if (resolvedToolName === "query_corridor_data" || resolvedToolName === undefined) {
+    const geoPoints = parseGeoJsonFeaturePoints(payload);
+    if (geoPoints.length > 0) {
+      nextPoints = [...nextPoints, ...geoPoints];
     }
   }
 
@@ -1758,6 +1877,39 @@ function finalizeOverlayData(data: MapOverlayData): MapOverlayData | null {
   return data;
 }
 
+/**
+ * Parse sub-agent wrapper format from orchestrator queries.
+ * Orchestrator sub-agents wrap domain tool outputs as:
+ *   {"synthesis": "...", "tool_results": [{"tool_name": "...", "content": "..."}]}
+ */
+function parseSubAgentWrapper(
+  content: unknown
+): Array<{ toolName: string; payload: UnknownRecord }> | null {
+  if (typeof content !== "string") return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  const record = toRecord(parsed);
+  if (!record || !Array.isArray(record.tool_results)) return null;
+
+  const results: Array<{ toolName: string; payload: UnknownRecord }> = [];
+  for (const item of record.tool_results as unknown[]) {
+    const entry = toRecord(item);
+    if (!entry) continue;
+    const toolName = typeof entry.tool_name === "string" ? entry.tool_name : undefined;
+    const rawContent = entry.content;
+    if (!toolName || typeof rawContent !== "string") continue;
+    const payload = parseToolContent(rawContent);
+    if (payload) {
+      results.push({ toolName, payload });
+    }
+  }
+  return results.length > 0 ? results : null;
+}
+
 export function extractMapOverlayData(messages: Message[]): MapOverlayData | null {
   let overlayData: MapOverlayData = {
     points: [],
@@ -1781,10 +1933,21 @@ export function extractMapOverlayData(messages: Message[]): MapOverlayData | nul
     if (message.type !== "tool") continue;
 
     const toolMessage = message as Message & { name?: string };
-    const payload = parseToolContent(toolMessage.content);
-    if (!payload) continue;
 
-    overlayData = applyOverlayPayload(toolMessage.name, payload, overlayData);
+    // Standard tool content parsing
+    const payload = parseToolContent(toolMessage.content);
+    if (payload) {
+      overlayData = applyOverlayPayload(toolMessage.name, payload, overlayData);
+      continue;
+    }
+
+    // Fallback: orchestrator sub-agent wrapper with embedded tool_results
+    const embedded = parseSubAgentWrapper(toolMessage.content);
+    if (embedded) {
+      for (const result of embedded) {
+        overlayData = applyOverlayPayload(result.toolName, result.payload, overlayData);
+      }
+    }
   }
 
   return finalizeOverlayData(overlayData);
@@ -1813,9 +1976,18 @@ export function extractMapOverlayDataFromToolCalls(toolCalls: ToolCallLike[]): M
     const call = toolCall.call as { name?: unknown } | null | undefined;
     const toolName = typeof call?.name === "string" ? call.name : undefined;
     const payload = parseToolContent(toolCall.result?.content);
-    if (!toolName || !payload) continue;
+    if (payload) {
+      overlayData = applyOverlayPayload(toolName, payload, overlayData);
+      continue;
+    }
 
-    overlayData = applyOverlayPayload(toolName, payload, overlayData);
+    // Fallback: orchestrator sub-agent wrapper
+    const embedded = parseSubAgentWrapper(toolCall.result?.content);
+    if (embedded) {
+      for (const result of embedded) {
+        overlayData = applyOverlayPayload(result.toolName, result.payload, overlayData);
+      }
+    }
   }
 
   return finalizeOverlayData(overlayData);

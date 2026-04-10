@@ -49,14 +49,9 @@ function formatLabel(value: string): string {
 
 export const EXAMPLE_CANVAS_DOCUMENTS: CanvasDocument[] = [
   {
-    id: "example-exec-report",
-    title: "Executive Summary Report",
-    content: `Project: East Africa Backbone Corridor\nStatus: Draft\n\nSummary\nThe corridor is viable with strong industrial demand concentration near Nairobi and Kampala. Current opportunity is to prioritize a first deployment phase that links known anchor loads before extending to secondary growth clusters.\n\nKey Highlights\n- 3 primary demand anchors identified\n- Recommended initial route avoids high-risk flood sections\n- Estimated phase-one demand capture: 142 MW\n\nImmediate Actions\n1. Validate right-of-way assumptions with field survey team\n2. Initiate anchor commercial outreach for top-tier offtakers\n3. Run bankability scoring refresh once updated anchor financials are received`,
-  },
-  {
-    id: "example-risk-note",
-    title: "Risk & Mitigation Note",
-    content: `Document Purpose\nCapture the current risk posture for the proposed corridor and define mitigation actions for the next planning cycle.\n\nTop Risks\n- Terrain complexity in segment S2 may increase civil costs\n- Unverified generation assumptions around two industrial clusters\n- Delayed permitting window in one cross-border section\n\nMitigation Plan\n- Commission high-resolution terrain survey for S2 before EPC scoping\n- Add confidence scoring to all generation assumptions in next model run\n- Start permit pre-consultations in parallel with route variant review\n\nDecision Gate\nAdvance to commercial packaging only if revised route cost delta stays within 12% of base model.`,
+    id: "corridor-overview",
+    title: "Corridor Overview",
+    content: `Lagos-Abidjan Economic Corridor\nLength: 1,028 km | Countries: 5 (NGA, BEN, TGO, GHA, CIV)\n\nUse the AI Agents to query live corridor data:\n- "What is Nigeria's GDP?" → Economic indicators\n- "Show me cocoa trade flows" → Trade analysis\n- "How many infrastructure projects?" → Project pipeline\n- "Compare investment policies" → Policy analysis\n\nData artifacts from agent queries will appear here as tabs.`,
   },
 ];
 

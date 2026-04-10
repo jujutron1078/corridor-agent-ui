@@ -3,7 +3,7 @@
 import * as React from "react";
 
 const ASSISTANT_STORAGE_KEY = "corridor:assistant-id";
-const DEFAULT_ASSISTANT_ID = "geospatial_intelligence_agent";
+const DEFAULT_ASSISTANT_ID = "orchestrator_agent";
 
 export const ASSISTANTS = [
   { id: "orchestrator_agent", label: "Orchestrator" },

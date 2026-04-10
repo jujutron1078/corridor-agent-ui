@@ -68,7 +68,7 @@ export type DeleteProjectActionResult =
       message: string
     }
 
-const PROJECTS_API_URL = process.env.PROJECTS_API_URL ?? "http://127.0.0.1:2024"
+const PROJECTS_API_URL = process.env.PROJECTS_API_URL ?? "http://localhost:8000"
 
 export async function createProjectAction(projectName: string): Promise<CreateProjectActionResult> {
   const trimmed = projectName.trim()

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { generateThreadNameAction } from "@/app/actions/threads";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useStream } from "@langchain/langgraph-sdk/react";
 import type { Message } from "@langchain/langgraph-sdk";
@@ -14,8 +15,9 @@ import { Button } from "@/components/ui/button";
 import { useAssistant } from "@/lib/assistant-context";
 import type { MapOverlayData } from "@/lib/map-overlay";
 import { extractMapOverlayData, extractMapOverlayDataFromToolCalls } from "@/lib/map-overlay";
-
-const LANGGRAPH_API_URL = "http://127.0.0.1:2024";
+import { LANGGRAPH_API_URL } from "@/lib/constants";
+import { saveOpportunity, type OpportunityData } from "@/lib/api/opportunities";
+import { toast } from "sonner";
 const THREAD_PARAM = "thread";
 
 function getTextForScroll(content: Message["content"]): string {
@@ -53,6 +55,7 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const userJustSentRef = useRef(false);
+  const hasGeneratedNameRef = useRef(false);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -69,6 +72,11 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
     [pathname, router, searchParams]
   );
 
+  // Reset name generation tracking when thread changes
+  useEffect(() => {
+    hasGeneratedNameRef.current = false;
+  }, [threadId]);
+
   const stream = useStream<{ messages: Message[] }>({
     assistantId,
     apiUrl: LANGGRAPH_API_URL,
@@ -76,6 +84,15 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
     onThreadId: handleThreadId,
     reconnectOnMount: true,
     throttle: true,
+    onError: (error) => {
+      console.warn("[LangGraph] stream error:", error);
+      // If thread not found (stale ID after server restart), clear it so a new one is created
+      if (error instanceof Error && error.message?.includes("404")) {
+        const params = new URLSearchParams(searchParams.toString());
+        params.delete(THREAD_PARAM);
+        router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+      }
+    },
   });
 
   const messages = stream.messages;
@@ -105,17 +122,21 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
     return getTextForScroll(messages[messages.length - 1].content).length;
   }, [messages]);
 
+  const isAtBottomRef = useRef(isAtBottom);
+  isAtBottomRef.current = isAtBottom;
+
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
     const sentNow = userJustSentRef.current;
-    const shouldFollow = sentNow || isAtBottom;
+    const shouldFollow = sentNow || (isAtBottomRef.current && isLoading);
     if (shouldFollow) {
       userJustSentRef.current = false;
       scrollToBottom(sentNow ? "smooth" : "auto");
     }
     updateAtBottomState();
-  }, [messages.length, isLoading, lastMessageContentLength, isAtBottom, scrollToBottom, updateAtBottomState]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length, isLoading, lastMessageContentLength, scrollToBottom, updateAtBottomState]);
 
   useEffect(() => {
     updateAtBottomState();
@@ -175,9 +196,38 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
     };
   }, [messages, onMapDataChange, threadId, getToolCalls, stream.client]);
 
+  const handleSaveOpportunity = useCallback(
+    async (opportunity: OpportunityData) => {
+      if (projectId === "None") {
+        toast.error("Select a project before saving opportunities.");
+        return;
+      }
+      try {
+        await saveOpportunity(projectId, {
+          ...opportunity,
+          thread_id: threadId ?? undefined,
+        });
+        toast.success("Opportunity saved", {
+          description: opportunity.title,
+          action: {
+            label: "View all",
+            onClick: () => router.push("/opportunities"),
+          },
+        });
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to save opportunity"
+        );
+      }
+    },
+    [projectId, threadId, router]
+  );
+
   const handleSubmit = useCallback(() => {
     const text = input.trim();
     if (!text || stream.isLoading) return;
+
+    const isFirstMessage = messages.length === 0;
 
     setInput("");
     userJustSentRef.current = true;
@@ -187,6 +237,7 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
         messages: [{ content: text, type: "human" }],
       },
       {
+        config: { recursion_limit: 100 },
         streamResumable: true,
         context: {
           project_name: projectName,
@@ -201,7 +252,30 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
         },
       }
     );
-  }, [input, projectId, projectName, stream]);
+
+    // Auto-generate a thread name from the first message
+    if (
+      isFirstMessage &&
+      threadId &&
+      projectId !== "None" &&
+      !hasGeneratedNameRef.current
+    ) {
+      hasGeneratedNameRef.current = true;
+      void generateThreadNameAction({
+        projectId,
+        threadId,
+        message: text,
+      }).then((result) => {
+        if (result.ok) {
+          window.dispatchEvent(
+            new CustomEvent("corridor:thread-name-updated", {
+              detail: { projectId, threadId, name: result.name },
+            })
+          );
+        }
+      });
+    }
+  }, [input, messages.length, projectId, projectName, stream, threadId]);
 
   const hasMessages = messages.length > 0 || isLoading;
 
@@ -229,7 +303,7 @@ export function ChatPanel({ withBottomSpacing = false, onMapDataChange }: ChatPa
         onScroll={updateAtBottomState}
         className="min-h-0 flex-1 overflow-y-auto pb-6 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
       >
-        <ChatMessageList messages={messages} isLoading={isLoading} getToolCalls={getToolCalls} />
+        <ChatMessageList messages={messages} isLoading={isLoading} getToolCalls={getToolCalls} onSaveOpportunity={handleSaveOpportunity} />
         <div ref={messagesEndRef} />
       </div>
 

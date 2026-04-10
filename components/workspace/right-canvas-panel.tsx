@@ -26,6 +26,8 @@ type RightCanvasTab = "map" | "artifacts";
 
 type RightCanvasPanelProps = {
   mapData: MapOverlayData | null;
+  hideDataLayers?: boolean;
+  dashboardMode?: boolean;
 };
 
 const MapPanel = dynamic(
@@ -33,7 +35,7 @@ const MapPanel = dynamic(
   { ssr: false }
 );
 
-export function RightCanvasPanel({ mapData }: RightCanvasPanelProps) {
+export function RightCanvasPanel({ mapData, hideDataLayers, dashboardMode }: RightCanvasPanelProps) {
   const [activeTab, setActiveTab] = useState<RightCanvasTab>("map");
   const [selectedDocumentId, setSelectedDocumentId] = useState<string>(EXAMPLE_CANVAS_DOCUMENTS[0].id);
   const [documentDrafts, setDocumentDrafts] = useState<Record<string, string>>({});
@@ -95,6 +97,24 @@ export function RightCanvasPanel({ mapData }: RightCanvasPanelProps) {
     ? (documentDrafts[activeDocumentId] ?? activeDocument?.content ?? "")
     : "";
 
+  // Dashboard mode: render only the data-layer sidebar or just the map (no tabs)
+  if (dashboardMode) {
+    if (!hideDataLayers) {
+      // Render ONLY the data-layer sidebar panel
+      return (
+        <div className="h-full">
+          <MapPanel data={mapData} hideDataLayers={false} dataLayerSidebarOnly />
+        </div>
+      );
+    }
+    // Render ONLY the map, no sidebar, no tabs
+    return (
+      <div className="h-full">
+        <MapPanel data={mapData} hideDataLayers noDataLayers />
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       {activeTab === "artifacts" ? (
@@ -150,7 +170,7 @@ export function RightCanvasPanel({ mapData }: RightCanvasPanelProps) {
 
       {activeTab === "map" ? (
         <div className="min-h-0 flex-1 overflow-hidden">
-          <MapPanel data={mapData} />
+          <MapPanel data={mapData} hideDataLayers={hideDataLayers} noDataLayers={hideDataLayers} />
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted/10">
