@@ -6,7 +6,7 @@ import "maplibre-gl/dist/maplibre-gl.css"
 import { MapboxOverlay } from "@deck.gl/mapbox"
 import { GeoJsonLayer, ScatterplotLayer, ArcLayer } from "@deck.gl/layers"
 import { HeatmapLayer } from "@deck.gl/aggregation-layers"
-import type { DashboardSnapshot, LayerVisibility } from "../page"
+import type { DashboardSnapshot, LayerVisibility } from "@/components/interactive-map-page"
 
 // ── Commodity color map ──────────────────────────────────────────────────────
 const COMMODITY_COLORS: Record<string, [number, number, number]> = {

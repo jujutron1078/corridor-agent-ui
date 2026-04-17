@@ -12,7 +12,7 @@ import {
   IconChevronDown,
   IconChevronUp,
 } from "@tabler/icons-react"
-import type { LayerVisibility } from "../page"
+import type { LayerVisibility } from "@/components/interactive-map-page"
 
 interface LayerControlsProps {
   layers: LayerVisibility

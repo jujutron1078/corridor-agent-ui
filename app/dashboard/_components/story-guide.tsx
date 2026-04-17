@@ -12,7 +12,7 @@ import {
   IconBulb,
   IconMapPin,
 } from "@tabler/icons-react"
-import type { LayerVisibility } from "../page"
+import type { LayerVisibility } from "@/components/interactive-map-page"
 
 interface StoryStep {
   title: string

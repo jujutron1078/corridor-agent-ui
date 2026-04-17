@@ -50,36 +50,36 @@
 
 :root {
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --background: oklch(0.97 0.02 85);
+  --foreground: oklch(0.26 0.03 66);
+  --card: oklch(0.99 0.01 85);
+  --card-foreground: oklch(0.26 0.03 66);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --primary: oklch(0.68 0.19 55);
+  --primary-foreground: oklch(0.98 0.01 90);
+  --secondary: oklch(0.94 0.03 86);
+  --secondary-foreground: oklch(0.3 0.04 62);
+  --muted: oklch(0.94 0.02 86);
+  --muted-foreground: oklch(0.47 0.03 63);
+  --accent: oklch(0.94 0.04 84);
+  --accent-foreground: oklch(0.3 0.04 62);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
+  --border: oklch(0.89 0.03 83);
+  --input: oklch(0.89 0.03 83);
   --ring: oklch(0.708 0 0);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
+  --sidebar: oklch(0.95 0.03 86);
+  --sidebar-foreground: oklch(0.28 0.03 63);
+  --sidebar-primary: oklch(0.68 0.19 55);
+  --sidebar-primary-foreground: oklch(0.98 0.01 90);
+  --sidebar-accent: oklch(0.9 0.04 82);
+  --sidebar-accent-foreground: oklch(0.28 0.03 63);
+  --sidebar-border: oklch(0.86 0.04 80);
   --sidebar-ring: oklch(0.708 0 0);
 }
 
@@ -124,4 +124,33 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+@keyframes corridorFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes corridorCardFloat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+.corridor-fade-in {
+  animation: corridorFadeIn 500ms ease-out both;
+}
+
+.corridor-card-float {
+  animation: corridorFadeIn 500ms ease-out both, corridorCardFloat 6s ease-in-out infinite;
 }

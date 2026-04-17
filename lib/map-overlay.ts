@@ -189,6 +189,15 @@ export type GrowthTrajectoryAnalysis = {
   profiles: GrowthTrajectoryProfile[];
 };
 
+export type ClimateHazardCategory = "low" | "moderate" | "high" | "critical" | "unknown";
+
+export type ClimateRiskSummary = {
+  score?: number;                  // 0..1 normalized
+  category?: ClimateHazardCategory | string;
+  details?: Record<string, unknown>;
+  source?: string;
+};
+
 export type TerrainSegmentAnalysis = {
   segmentId?: string;
   label?: string;
@@ -206,6 +215,10 @@ export type TerrainSegmentAnalysis = {
   avgSlope?: number;
   soilStability?: string;
   floodRisk?: string;
+  droughtRisk?: ClimateRiskSummary;
+  heatRisk?: ClimateRiskSummary;
+  coastalFloodRisk?: ClimateRiskSummary;
+  compositeClimateRisk?: ClimateRiskSummary;
   difficultyScore?: number;
 };
 
@@ -861,6 +874,16 @@ function parseTerrainAnalysis(payload: UnknownRecord): TerrainAnalysis | null {
       const slopeAnalysis = toRecord(item.slope_analysis);
       const soilStabilityRecord = toRecord(item.soil_stability);
       const floodRiskRecord = toRecord(item.flood_risk);
+      const toClimateSummary = (value: unknown): ClimateRiskSummary | undefined => {
+        const record = toRecord(value);
+        if (!record) return undefined;
+        return {
+          score: toNumber(record.score) ?? undefined,
+          category: toString(record.category) ?? undefined,
+          details: toRecord(record.details) ?? undefined,
+          source: toString(record.source) ?? undefined,
+        };
+      };
 
       return {
         segmentId: toString(item.segment_id),
@@ -890,6 +913,10 @@ function parseTerrainAnalysis(payload: UnknownRecord): TerrainAnalysis | null {
         soilStability:
           toString(item.soil_stability) ?? toString(soilStabilityRecord?.classification),
         floodRisk: toString(item.flood_risk) ?? toString(floodRiskRecord?.classification),
+        droughtRisk: toClimateSummary(item.drought_risk),
+        heatRisk: toClimateSummary(item.heat_risk),
+        coastalFloodRisk: toClimateSummary(item.coastal_flood_risk),
+        compositeClimateRisk: toClimateSummary(item.composite_climate_risk),
         difficultyScore:
           toNumber(item.difficulty_score) ??
           toNumber(item.risk_score) ??

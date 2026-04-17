@@ -2,7 +2,6 @@
 
 import { useCallback, useSyncExternalStore, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Layers, BarChart3 } from "lucide-react";
 
 import { ChatPanel } from "@/components/chat-panel";
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout";
@@ -99,6 +98,7 @@ export function ChatWorkspace({
   const searchParams = useSearchParams();
   const isDashboardView = searchParams.get("view") === "dashboard";
   const [mapData, setMapData] = useState<MapOverlayData | null>(null);
+  const [isMapFullscreen, setIsMapFullscreen] = useState(false);
 
   const splitSizes = useSyncExternalStore(
     subscribeLayoutStorage,
@@ -139,6 +139,21 @@ export function ChatWorkspace({
     );
   }
 
+  if (isMapFullscreen) {
+    return (
+      <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
+        <SiteHeader
+          onMapClick={onToggleMapCanvas}
+          onToggleMapFullscreen={() => setIsMapFullscreen(false)}
+          isMapFullscreen
+        />
+        <div className="min-h-0 flex-1">
+          <RightCanvasPanel mapData={mapData} hideDataLayers compactDataLayers />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <ResizablePanelGroup
       orientation="horizontal"
@@ -151,7 +166,10 @@ export function ChatWorkspace({
         className="h-full"
       >
         <div className="flex h-full min-h-0 w-full flex-col">
-          <SiteHeader onMapClick={onToggleMapCanvas} />
+          <SiteHeader
+            onMapClick={onToggleMapCanvas}
+            onToggleMapFullscreen={() => setIsMapFullscreen(true)}
+          />
           <div className="min-h-0 flex-1 px-4 py-3">
             <ChatPanel withBottomSpacing onMapDataChange={handleMapDataChange} />
           </div>
@@ -165,7 +183,7 @@ export function ChatWorkspace({
         minSize={MIN_CANVAS_PANEL_SIZE}
         className="h-full"
       >
-        <RightCanvasPanel mapData={mapData} />
+        <RightCanvasPanel mapData={mapData} hideDataLayers compactDataLayers />
       </ResizablePanel>
     </ResizablePanelGroup>
   );

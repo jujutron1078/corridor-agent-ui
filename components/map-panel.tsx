@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 
 import { ArcLayer, GeoJsonLayer, IconLayer, PathLayer, PolygonLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { ChevronDown, ChevronRight, Loader2, Maximize2, Minimize2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Layers, Loader2, Maximize2, Minimize2 } from "lucide-react";
 import maplibregl, { Map as MapLibreMap, Popup as MapLibrePopup } from "maplibre-gl";
 import type { Feature, FeatureCollection, Polygon } from "geojson";
 
@@ -1066,6 +1066,8 @@ function buildLegendGroups(store: DataLayerStore): LegendGroup[] {
 type MapPanelProps = {
   data?: MapOverlayData | null;
   hideDataLayers?: boolean;
+  /** Show compact floating data-layer controls (used in Agent map view) */
+  compactDataLayers?: boolean;
   /** Render only the data-layer sidebar, no map */
   dataLayerSidebarOnly?: boolean;
   /** Show the gold corridor highway alignment line */
@@ -1074,7 +1076,14 @@ type MapPanelProps = {
   noDataLayers?: boolean;
 };
 
-export function MapPanel({ data = null, hideDataLayers = false, dataLayerSidebarOnly = false, corridorLine = false, noDataLayers = false }: MapPanelProps) {
+export function MapPanel({
+  data = null,
+  hideDataLayers = false,
+  compactDataLayers = false,
+  dataLayerSidebarOnly = false,
+  corridorLine = false,
+  noDataLayers = false,
+}: MapPanelProps) {
   const panelFrameRef = useRef<HTMLDivElement>(null);
   const filterPanelRef = useRef<HTMLDivElement>(null);
   const layerTogglePanelRef = useRef<HTMLDivElement>(null);
@@ -1119,6 +1128,7 @@ export function MapPanel({ data = null, hideDataLayers = false, dataLayerSidebar
   const [isLayerToggleMinimized, setIsLayerToggleMinimized] = useState(() =>
     readStoredBoolean(LAYER_PANEL_MINIMIZED_STORAGE_KEY, false)
   );
+  const [showCompactDataLayers, setShowCompactDataLayers] = useState(false);
   const [layerVisibility, setLayerVisibility] = useState<LayerVisibility>(() =>
     readStoredLayerVisibility()
   );
@@ -2613,6 +2623,74 @@ export function MapPanel({ data = null, hideDataLayers = false, dataLayerSidebar
               Loading map...
             </div>
           )}
+
+          {compactDataLayers && hideDataLayers && !skipDataLayers ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setShowCompactDataLayers((previous) => !previous)}
+                className="absolute left-3 top-3 z-[520] flex items-center gap-1.5 rounded-lg border border-border bg-background/95 px-3 py-2 text-xs font-medium shadow-lg backdrop-blur-sm transition hover:bg-muted/80"
+              >
+                <Layers className="size-4" />
+                Data Layers
+              </button>
+              {showCompactDataLayers ? (
+                <div className="absolute left-3 top-14 z-[520] max-h-[70vh] w-[260px] overflow-y-auto rounded-xl border border-border bg-background/95 p-3 text-xs shadow-xl backdrop-blur-sm">
+                  {DATA_LAYER_GROUPS.map((grp) => {
+                    const groupLayers = DATA_LAYERS.filter((l) => l.group === grp.key);
+                    return (
+                      <div key={grp.key} className="mb-3 last:mb-0">
+                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          {grp.label}
+                        </div>
+                        <div className="space-y-0.5">
+                          {groupLayers.map((layer) => {
+                            const state = dataLayerStore[layer.id];
+                            const isActive = state?.active ?? false;
+                            const isLoading = state?.loading ?? false;
+                            const count = state?.featureCount ?? 0;
+                            return (
+                              <button
+                                key={layer.id}
+                                type="button"
+                                onClick={() => toggleDataLayer(layer.id)}
+                                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition ${
+                                  isActive ? "bg-muted/80" : "hover:bg-muted/40"
+                                }`}
+                              >
+                                {isLoading ? (
+                                  <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+                                ) : (
+                                  <span
+                                    className={`inline-block size-3 shrink-0 rounded-sm border ${
+                                      isActive ? "border-transparent" : "border-border"
+                                    }`}
+                                    style={
+                                      isActive
+                                        ? {
+                                            backgroundColor: `rgb(${layer.color[0]},${layer.color[1]},${layer.color[2]})`,
+                                          }
+                                        : undefined
+                                    }
+                                  />
+                                )}
+                                <span className="flex-1 text-[12px]">{layer.label}</span>
+                                {isActive && count > 0 ? (
+                                  <span className="text-[10px] tabular-nums text-muted-foreground">
+                                    {count.toLocaleString()}
+                                  </span>
+                                ) : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </>
+          ) : null}
         </div>
       </div>
     </div>

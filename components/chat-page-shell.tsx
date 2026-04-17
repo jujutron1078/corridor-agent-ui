@@ -9,6 +9,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { ChatWorkspace } from "@/components/chat-workspace";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { AssistantProvider } from "@/lib/assistant-context";
+import { cn } from "@/lib/utils";
 
 const sidebarStyle = {
   "--sidebar-width": "224px",
@@ -32,7 +33,11 @@ function getSplitViewSnapshot() {
   return window.localStorage.getItem(MAP_OPEN_STORAGE_KEY) === "true";
 }
 
-export function ChatPageShell() {
+type ChatPageShellProps = {
+  className?: string;
+};
+
+export function ChatPageShell({ className }: ChatPageShellProps) {
   const searchParams = useSearchParams();
   const isDashboard = searchParams.get("view") === "dashboard";
 
@@ -49,10 +54,14 @@ export function ChatPageShell() {
   }, []);
 
   return (
-    <SidebarProvider className="h-svh" style={sidebarStyle} defaultOpen={!isDashboard}>
+    <SidebarProvider
+      className={cn("h-svh", className)}
+      style={sidebarStyle}
+      defaultOpen={!isDashboard}
+    >
       <AssistantProvider>
         <Suspense fallback={null}>
-          <AppSidebar variant="sidebar" />
+          <AppSidebar variant="sidebar" mode="agent" />
         </Suspense>
         <SidebarInset className="min-h-0 overflow-hidden">
           <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">

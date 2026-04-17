@@ -16,11 +16,13 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ASSISTANTS, useAssistant } from "@/lib/assistant-context";
 import { toast } from "sonner";
-import { ChevronDown, Loader2, PanelRightOpen, Plus } from "lucide-react";
+import { ChevronDown, Loader2, Maximize2, Minimize2, PanelRightOpen, Plus } from "lucide-react";
 import { LANGGRAPH_API_URL } from "@/lib/constants";
 
 type SiteHeaderProps = {
   onMapClick?: () => void;
+  onToggleMapFullscreen?: () => void;
+  isMapFullscreen?: boolean;
 };
 const THREADS_UPDATED_EVENT = "corridor:threads-updated";
 type ThreadsUpdatedEventDetail = {
@@ -29,7 +31,11 @@ type ThreadsUpdatedEventDetail = {
   threadId: string;
 };
 
-export function SiteHeader({ onMapClick }: SiteHeaderProps) {
+export function SiteHeader({
+  onMapClick,
+  onToggleMapFullscreen,
+  isMapFullscreen = false,
+}: SiteHeaderProps) {
   const { assistantId, setAssistantId } = useAssistant();
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const client = useMemo(() => new Client({ apiUrl: LANGGRAPH_API_URL }), []);
@@ -132,6 +138,18 @@ export function SiteHeader({ onMapClick }: SiteHeaderProps) {
           {isCreatingThread ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
         </Button>
         <div className="ml-auto flex items-center gap-2">
+          {onToggleMapFullscreen ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="hidden sm:flex"
+              onClick={onToggleMapFullscreen}
+              aria-label={isMapFullscreen ? "Exit full screen map" : "Open full screen map"}
+              title={isMapFullscreen ? "Exit full screen map" : "Open full screen map"}
+            >
+              {isMapFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="sm"

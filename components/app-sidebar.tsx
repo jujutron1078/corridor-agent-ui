@@ -3,6 +3,7 @@
 import * as React from "react"
 import { Client } from "@langchain/langgraph-sdk"
 import Image from "next/image"
+import Link from "next/link"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
   IconFolder,
@@ -74,6 +75,12 @@ type SidebarProject = {
   }[]
 }
 
+type AppSidebarMode = "data-overview" | "agent"
+
+type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
+  mode?: AppSidebarMode
+}
+
 function mapProjectsForSidebar(
   projects: {
     project_id: string
@@ -89,12 +96,12 @@ function mapProjectsForSidebar(
     threads: project.threads.map((thread) => ({
       threadId: thread.thread_id,
       name: thread.name || thread.thread_id,
-      url: `/?project_id=${encodeURIComponent(project.project_id)}&project_name=${encodeURIComponent(project.name)}&thread=${encodeURIComponent(thread.thread_id)}`,
+      url: `/agent?project_id=${encodeURIComponent(project.project_id)}&project_name=${encodeURIComponent(project.name)}&thread=${encodeURIComponent(thread.thread_id)}`,
     })),
   }))
 }
 
-export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+export function AppSidebar({ mode = "data-overview", ...props }: AppSidebarProps) {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -155,7 +162,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               {
                 threadId: detail.threadId,
                 name: "New chat",
-                url: `/?project_id=${encodeURIComponent(detail.projectId)}&project_name=${encodeURIComponent(detail.projectName)}&thread=${encodeURIComponent(detail.threadId)}`,
+                url: `/agent?project_id=${encodeURIComponent(detail.projectId)}&project_name=${encodeURIComponent(detail.projectName)}&thread=${encodeURIComponent(detail.threadId)}`,
               },
             ],
           }
@@ -298,7 +305,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                     {
                       threadId: createdThread.thread_id,
                       name: "New chat",
-                      url: `/?project_id=${encodeURIComponent(projectId)}&project_name=${encodeURIComponent(projectName)}&thread=${encodeURIComponent(createdThread.thread_id)}`,
+                      url: `/agent?project_id=${encodeURIComponent(projectId)}&project_name=${encodeURIComponent(projectName)}&thread=${encodeURIComponent(createdThread.thread_id)}`,
                     },
                   ],
                 }
@@ -398,7 +405,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               asChild
               className="data-[slot=sidebar-menu-button]:!p-1.5"
             >
-              <a href="#">
+              <Link href="/">
                 <Image
                   src="/corridor-favicon.svg"
                   alt="Corridor Intelligence"
@@ -407,39 +414,54 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                   className="shrink-0"
                 />
                 <span className="text-base font-semibold">Corridor Intelligence</span>
-              </a>
+              </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={[
-          { title: "Corridor Overview", url: "/overview", icon: IconMap2 },
-          { title: "Manufacturing", url: "/manufacturing", icon: IconBuildingFactory2 },
-          { title: "Policy", url: "/policy", icon: IconScale },
-          { title: "Stakeholders", url: "/stakeholders", icon: IconUsers },
-          { title: "Tourism", url: "/tourism", icon: IconBeach },
-          { title: "Agriculture", url: "/agriculture", icon: IconPlant2 },
-          { title: "Infrastructure", url: "/infrastructure", icon: IconRoad },
-          { title: "Economy", url: "/economy", icon: IconTrendingUp },
-          { title: "Projects", url: "/projects", icon: IconFolderOpen },
-          { title: "Opportunities", url: "/opportunities", icon: IconBulb },
-          { title: "Investor Dashboard", url: "/dashboard", icon: IconPresentationAnalytics },
-        ]} />
-        <NavProjects
-          items={projectsData}
-          onDeleteThread={handleDeleteThread}
-          deletingThreadIds={deletingThreadIds}
-          onCreateProject={handleCreateProject}
-          onCreateThread={handleCreateThreadForProject}
-          creatingThreadProject={creatingThreadProject}
-          onDeleteProject={handleDeleteProject}
-          deletingProjectId={deletingProjectId}
-        />
+        {mode === "data-overview" ? (
+          <>
+            <NavMain
+              groupLabel="Data"
+              items={[
+                { title: "Agriculture", url: "/agriculture", icon: IconPlant2 },
+                { title: "Economy", url: "/economy", icon: IconTrendingUp },
+                { title: "Infrastructure", url: "/infrastructure", icon: IconRoad },
+                { title: "Manufacturing", url: "/manufacturing", icon: IconBuildingFactory2 },
+                { title: "Opportunities", url: "/opportunities", icon: IconBulb },
+                { title: "Policy", url: "/policy", icon: IconScale },
+                { title: "Projects", url: "/projects", icon: IconFolderOpen },
+                { title: "Stakeholders", url: "/stakeholders", icon: IconUsers },
+                { title: "Tourism", url: "/tourism", icon: IconBeach },
+              ]}
+            />
+            <NavMain
+              groupLabel="Map"
+              items={[
+                { title: "Interactive Map", url: "/overview/interactive-map", icon: IconMap2 },
+                { title: "Investor Dashboard", url: "/dashboard", icon: IconPresentationAnalytics },
+              ]}
+            />
+          </>
+        ) : (
+          <NavProjects
+            items={projectsData}
+            onDeleteThread={handleDeleteThread}
+            deletingThreadIds={deletingThreadIds}
+            onCreateProject={handleCreateProject}
+            onCreateThread={handleCreateThreadForProject}
+            creatingThreadProject={creatingThreadProject}
+            onDeleteProject={handleDeleteProject}
+            deletingProjectId={deletingProjectId}
+          />
+        )}
       </SidebarContent>
-      <SidebarFooter>
-        <NavUser user={data.user} />
-      </SidebarFooter>
+      {mode === "data-overview" && (
+        <SidebarFooter>
+          <NavUser user={data.user} />
+        </SidebarFooter>
+      )}
       <SidebarRail />
     </Sidebar>
   )

@@ -28,6 +28,7 @@ type RightCanvasPanelProps = {
   mapData: MapOverlayData | null;
   hideDataLayers?: boolean;
   dashboardMode?: boolean;
+  compactDataLayers?: boolean;
 };
 
 const MapPanel = dynamic(
@@ -35,7 +36,12 @@ const MapPanel = dynamic(
   { ssr: false }
 );
 
-export function RightCanvasPanel({ mapData, hideDataLayers, dashboardMode }: RightCanvasPanelProps) {
+export function RightCanvasPanel({
+  mapData,
+  hideDataLayers,
+  dashboardMode,
+  compactDataLayers = false,
+}: RightCanvasPanelProps) {
   const [activeTab, setActiveTab] = useState<RightCanvasTab>("map");
   const [selectedDocumentId, setSelectedDocumentId] = useState<string>(EXAMPLE_CANVAS_DOCUMENTS[0].id);
   const [documentDrafts, setDocumentDrafts] = useState<Record<string, string>>({});
@@ -170,7 +176,12 @@ export function RightCanvasPanel({ mapData, hideDataLayers, dashboardMode }: Rig
 
       {activeTab === "map" ? (
         <div className="min-h-0 flex-1 overflow-hidden">
-          <MapPanel data={mapData} hideDataLayers={hideDataLayers} noDataLayers={hideDataLayers} />
+          <MapPanel
+            data={mapData}
+            hideDataLayers={hideDataLayers}
+            compactDataLayers={compactDataLayers}
+            noDataLayers={hideDataLayers && !compactDataLayers}
+          />
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted/10">
