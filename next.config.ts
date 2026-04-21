@@ -2,12 +2,11 @@ import type { NextConfig } from "next";
 
 const CSP_DIRECTIVES = [
   "default-src 'self'",
-  // Next.js needs unsafe-inline/eval for its runtime; tighten with nonces later.
   "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https://tile.openstreetmap.org https://*.basemaps.cartocdn.com https://api.maptiler.com https://*.tiles.mapbox.com",
+  "style-src 'self' 'unsafe-inline' https://unpkg.com",
+  "img-src 'self' data: blob: https: http:",
   "font-src 'self' data:",
-  "connect-src 'self' https://api.maptiler.com https://*.tiles.mapbox.com",
+  "connect-src 'self' https: wss:",
   "worker-src 'self' blob:",
   "frame-ancestors 'none'",
   "base-uri 'self'",
