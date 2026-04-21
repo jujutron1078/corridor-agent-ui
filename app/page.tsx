@@ -1,5 +1,15 @@
 import Link from "next/link";
-import { ArrowRight, ChevronRight, MapPin, TrendingUp, Users, BriefcaseBusiness, Sparkles } from "lucide-react";
+import {
+  ArrowRight,
+  ChevronRight,
+  MapPin,
+  TrendingUp,
+  Users,
+  BriefcaseBusiness,
+  Home as HomeIcon,
+  Database,
+  Bot,
+} from "lucide-react";
 
 import { TopNavbar } from "@/components/top-navbar";
 
@@ -18,13 +28,49 @@ const highlights = [
   { title: "Construction start - targeting 2030 completion", value: "2026", icon: MapPin },
 ];
 
+const flowSteps = [
+  {
+    icon: HomeIcon,
+    title: "Home",
+    description: "Introduces the corridor story and headline KPIs.",
+  },
+  {
+    icon: Database,
+    title: "Data Overview",
+    description: "Holds all analytical domain pages and datasets.",
+  },
+  {
+    icon: Bot,
+    title: "Agent",
+    description: "Chat-driven exploration with contextual map overlays.",
+  },
+];
+
 export default function HomePage() {
   return (
-    <div className="min-h-screen bg-[#f8f5eb]">
+    <div className="relative min-h-screen overflow-hidden bg-[#f8f5eb]">
       <TopNavbar />
 
-      <main className="mx-auto max-w-[1500px] space-y-8 px-4 py-8 sm:px-6">
-        <section className="corridor-fade-in grid gap-5 rounded-xl border border-[#ead9b4] bg-[#f4efde] p-6 shadow-[0_14px_30px_rgba(102,79,20,0.08)] lg:grid-cols-[1.3fr_1fr] lg:p-8">
+      <main className="relative mx-auto max-w-[1500px] space-y-8 px-4 py-8 sm:px-6">
+        <section className="corridor-fade-in relative overflow-hidden rounded-xl border border-[#ead9b4] bg-gradient-to-br from-[#f4efde] via-[#f6ecd0] to-[#fbe6c2] p-6 shadow-[0_14px_30px_rgba(102,79,20,0.08)] lg:p-8">
+          {/* Decorative Africa silhouette watermark inside the hero */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -right-24 -top-10 h-[520px] w-[520px] opacity-[0.22] sm:-right-16 sm:h-[640px] sm:w-[640px] lg:-right-4 lg:-top-16 lg:h-[780px] lg:w-[780px]"
+            style={{
+              maskImage: "url(/africa-silhouette.svg)",
+              WebkitMaskImage: "url(/africa-silhouette.svg)",
+              maskRepeat: "no-repeat",
+              WebkitMaskRepeat: "no-repeat",
+              maskSize: "contain",
+              WebkitMaskSize: "contain",
+              maskPosition: "center",
+              WebkitMaskPosition: "center",
+              backgroundImage:
+                "radial-gradient(circle at 35% 40%, #ef7c00 0%, #d26a00 55%, #a16e2f 100%)",
+            }}
+          />
+          <div className="relative z-10 grid gap-5 lg:grid-cols-[1.3fr_1fr]">
           <div>
             <p className="mb-3 text-xs uppercase tracking-[0.2em] text-[#a16e2f]">
               Abidjan-Lagos Corridor
@@ -59,7 +105,7 @@ export default function HomePage() {
               return (
                 <div
                   key={item.title}
-                  className="corridor-card-float rounded-xl border border-[#ecdcb7] bg-white/85 p-4"
+                  className="corridor-card-float rounded-xl border border-[#ecdcb7] bg-white/70 p-4 backdrop-blur-[3px]"
                   style={{ animationDelay: `${idx * 80}ms` }}
                 >
                   <Icon className="mb-2 h-4 w-4 text-[#ef7c00]" />
@@ -69,10 +115,11 @@ export default function HomePage() {
               );
             })}
           </div>
+          </div>
         </section>
 
         <section className="grid gap-5 lg:grid-cols-[1.25fr_1fr]">
-          <div className="rounded-xl border border-[#e6d6b4] bg-white/80 p-5">
+          <div className="rounded-xl border border-[#e6d6b4] bg-white/80 p-5 backdrop-blur-[2px]">
             <h2 className="text-lg font-semibold text-[#2d2417]">Data Overview Sections</h2>
             <p className="mt-1 text-sm text-[#685b40]">
               All intelligence sections are grouped under Data Overview.
@@ -98,37 +145,36 @@ export default function HomePage() {
             </div>
           </div>
 
-          <div className="rounded-xl border border-[#e6d6b4] bg-white/80 p-5">
+          <div className="rounded-xl border border-[#e6d6b4] bg-white/80 p-5 backdrop-blur-[2px]">
             <h2 className="text-lg font-semibold text-[#2d2417]">Operational Flow</h2>
-            <div className="mt-4 grid gap-3">
-              {[
-                "Home introduces the corridor story and KPIs.",
-                "Data Overview holds all analytical domain pages.",
-                "Agent focuses on chats with map overlays.",
-              ].map((item, index) => (
-                <div key={item} className="relative">
-                  <div className="flex items-center gap-2 rounded-lg border border-[#e8d8b5] bg-[#fffbf3] px-3 py-2.5">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#d4b175] bg-[#fff6e5] font-semibold text-[#d17a08]">
+            <ol className="relative mt-4 space-y-3 pl-[1.1rem]">
+              {/* vertical connector line running behind the step numbers */}
+              <span
+                aria-hidden="true"
+                className="absolute left-[1.1rem] top-4 bottom-4 w-px bg-gradient-to-b from-[#e3c287] via-[#d4a55e] to-[#e3c287]"
+              />
+              {flowSteps.map((step, index) => {
+                const Icon = step.icon;
+                return (
+                  <li key={step.title} className="relative flex items-start gap-3">
+                    <div className="relative z-10 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#d4b175] bg-[#fff6e5] text-[13px] font-semibold text-[#d17a08] shadow-[0_2px_6px_rgba(209,122,8,0.18)]">
                       {index + 1}
                     </div>
-                    <div className="flex flex-1 items-center justify-between">
-                      <span className="text-sm text-[#5f543e]">{item}</span>
-                      <Sparkles className="h-4 w-4 text-[#d09a46]" />
+                    <div className="flex flex-1 items-start justify-between rounded-lg border border-[#e8d8b5] bg-[#fffbf3]/95 px-3 py-2.5">
+                      <div>
+                        <p className="text-sm font-semibold text-[#3d3420]">{step.title}</p>
+                        <p className="text-xs leading-relaxed text-[#6a5c40]">{step.description}</p>
+                      </div>
+                      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-[#c18432]" />
                     </div>
-                  </div>
-                  {index < 2 && (
-                    <div className="pointer-events-none absolute -bottom-2 left-1/2 z-10 flex -translate-x-1/2 items-center text-[#d09a46]">
-                      <span className="h-3 w-px bg-[#d9bf8f]" />
-                      <ChevronRight className="h-4 w-4 rotate-90" />
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
+                  </li>
+                );
+              })}
+            </ol>
           </div>
         </section>
 
-        <section className="rounded-lg border-y-2 border-[#c9a500] bg-[#f9f6ed] py-6">
+        <section className="rounded-lg border-y-2 border-[#c9a500] bg-[#f9f6ed]/90 py-6 backdrop-blur-[2px]">
           <ul className="grid gap-2 px-4 text-center sm:grid-cols-[repeat(9,minmax(0,1fr))] sm:px-6">
             {timeline.map((item, idx) => (
               <li key={item.year} className="contents">
@@ -148,7 +194,7 @@ export default function HomePage() {
         </section>
       </main>
 
-      <footer className="border-t border-[#e0d6bf] bg-[#f5f0e2] py-4 text-center text-xs text-[#7a6849]">
+      <footer className="relative border-t border-[#e0d6bf] bg-[#f5f0e2]/95 py-4 text-center text-xs text-[#7a6849] backdrop-blur-[2px]">
         Platform developed for the EU-Africa Business Forum - Abidjan-Lagos Corridor - ALCoMA and ECOWAS Framework
       </footer>
     </div>
